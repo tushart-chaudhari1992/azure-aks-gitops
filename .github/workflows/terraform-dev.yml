@@ -1,16 +1,17 @@
 name: Terraform — Dev Infrastructure
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'infrastructure/terraform/**'
-      - '.github/workflows/terraform-dev.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'infrastructure/terraform/**'
-      - '.github/workflows/terraform-dev.yml'
+   workflow_dispatch: 
+  #push:
+   # branches: [main]
+    #paths:
+     # - 'infrastructure/terraform/**'
+      #- '.github/workflows/terraform-dev.yml'
+  #pull_request:
+   # branches: [main]
+   # paths:
+   #   - 'infrastructure/terraform/**'
+   #   - '.github/workflows/terraform-dev.yml'
 
 env:
   TF_VERSION: "1.7.5"
