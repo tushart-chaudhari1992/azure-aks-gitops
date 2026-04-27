@@ -646,6 +646,105 @@ terraform plan
 
 ---
 
+### Fix 4 — OIDC Federated Credential Subject Corrupted (shell line-wrap)
+
+**Error (in GitHub Actions):**
+```
+AADSTS700213: No matching federated identity record found for presented assertion
+subject 'repo:tushart-chaudhari1992/azure-aks-gitops:ref:refs/heads/main'
+```
+
+**Root cause:** When the federated credential creation commands were run, the shell line-wrapped the long username `tushart-chaudhari1992` mid-word, storing spaces inside the string. Azure stored:
+```
+repo:tushart  -chaudhari1992/azure-aks-gitops:ref:refs/heads/main   ← broken (spaces)
+```
+instead of:
+```
+repo:tushart-chaudhari1992/azure-aks-gitops:ref:refs/heads/main     ← correct
+```
+Azure's subject matching is exact — one space causes a total mismatch.
+
+**How to diagnose:** Always verify credentials after creating them:
+```bash
+az ad app federated-credential list \
+  --id <APP_ID> \
+  --query "[].{name:name, subject:subject}" \
+  --output json
+```
+
+**Fix:** Delete the broken credentials and recreate with the exact correct subject:
+```bash
+# List existing credential IDs
+az ad app federated-credential list --id 565da2b4-54d4-423c-893d-bcc454a09383 --query "[].id" --output tsv
+
+# Delete both broken credentials (replace IDs with your output above)
+az ad app federated-credential delete --id 565da2b4-54d4-423c-893d-bcc454a09383 --federated-credential-id <ID-1>
+az ad app federated-credential delete --id 565da2b4-54d4-423c-893d-bcc454a09383 --federated-credential-id <ID-2>
+
+# Recreate with correct subjects
+az ad app federated-credential create --id 565da2b4-54d4-423c-893d-bcc454a09383 --parameters \
+  '{"name":"github-main","issuer":"https://token.actions.githubusercontent.com","subject":"repo:tushart-chaudhari1992/azure-aks-gitops:ref:refs/heads/main","audiences":["api://AzureADTokenExchange"]}'
+
+az ad app federated-credential create --id 565da2b4-54d4-423c-893d-bcc454a09383 --parameters \
+  '{"name":"github-pr","issuer":"https://token.actions.githubusercontent.com","subject":"repo:tushart-chaudhari1992/azure-aks-gitops:pull_request","audiences":["api://AzureADTokenExchange"]}'
+```
+
+**Prevention:** Always pass federated credential parameters as a single unbroken line or use a JSON file:
+```bash
+# Safer — use a temp file to avoid shell line-wrap issues
+cat > /tmp/fed-cred.json <<EOF
+{
+  "name": "github-main",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:tushart-chaudhari1992/azure-aks-gitops:ref:refs/heads/main",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+EOF
+az ad app federated-credential create --id 565da2b4-54d4-423c-893d-bcc454a09383 --parameters @/tmp/fed-cred.json
+```
+
+---
+
+## Where to Check Pipeline Status
+
+### GitHub Actions runs
+```
+https://github.com/tushart-chaudhari1992/azure-aks-gitops/actions
+```
+- Left sidebar: select a specific workflow (`Terraform — Dev Infrastructure`, `Build, Scan and Push to ACR`, `DAST`)
+- Each run shows a job graph — click any job to see live logs
+- Red = failed, Yellow = waiting for approval, Green = passed
+
+### Trigger the Terraform pipeline manually (workflow_dispatch)
+1. Go to Actions → **Terraform — Dev Infrastructure**
+2. Click **Run workflow** (top right) → **Run workflow**
+
+### GitHub Security tab (SARIF findings)
+```
+https://github.com/tushart-chaudhari1992/azure-aks-gitops/security/code-scanning
+```
+Checkov, tfsec, Trivy, and ZAP all upload findings here. Filter by tool using the **Tool** dropdown.
+
+### Approve the apply job (after plan passes)
+1. Actions → the specific run → click **Review deployments**
+2. Check the box next to `dev` → **Approve and deploy**
+The apply job then runs `terraform apply` against the saved plan.
+
+### GitHub Environment protection rules
+```
+https://github.com/tushart-chaudhari1992/azure-aks-gitops/settings/environments
+```
+Click `dev` → add/remove required reviewers here.
+
+### GitHub Actions secrets and variables
+```
+https://github.com/tushart-chaudhari1992/azure-aks-gitops/settings/secrets/actions
+```
+Required secrets: `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
+Required variables: `ACR_NAME`, `ACR_LOGIN_SERVER` (set after Terraform apply)
+
+---
+
 ## Teardown (when done)
 
 ```bash
