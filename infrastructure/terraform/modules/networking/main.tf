@@ -23,11 +23,11 @@ resource "azurerm_subnet" "appgw" {
 # Dedicated subnet for private endpoints — private_endpoint_network_policies must be
 # Disabled so Azure can inject the private NIC without NSG interference
 resource "azurerm_subnet" "private_endpoints" {
-  name                                          = "pe-subnet"
-  resource_group_name                           = var.resource_group_name
-  virtual_network_name                          = azurerm_virtual_network.main.name
-  address_prefixes                              = [var.pe_subnet_cidr]
-  private_endpoint_network_policies             = "Disabled"
+  name                              = "pe-subnet"
+  resource_group_name               = var.resource_group_name
+  virtual_network_name              = azurerm_virtual_network.main.name
+  address_prefixes                  = [var.pe_subnet_cidr]
+  private_endpoint_network_policies = "Disabled"
 }
 
 resource "azurerm_network_security_group" "aks" {

@@ -37,7 +37,7 @@ module "networking" {
   vnet_cidr           = "10.20.0.0/16"
   aks_subnet_cidr     = "10.20.1.0/24"
   appgw_subnet_cidr   = "10.20.2.0/24"
-  pe_subnet_cidr      = "10.20.3.0/24"   # Dedicated subnet for private endpoint NICs
+  pe_subnet_cidr      = "10.20.3.0/24" # Dedicated subnet for private endpoint NICs
   tags                = local.tags
 }
 

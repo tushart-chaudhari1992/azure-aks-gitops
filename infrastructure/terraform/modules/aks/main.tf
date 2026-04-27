@@ -8,8 +8,8 @@ resource "azurerm_kubernetes_cluster" "main" {
   # Private cluster — API server has no public endpoint at all.
   # kubectl access requires being inside the VNet (jump box, VPN, or CI runner in VNet).
   # Trade-off: harder to access for developers, much smaller attack surface.
-  private_cluster_enabled             = true
-  private_dns_zone_id                 = "System"  # Azure manages the private DNS zone
+  private_cluster_enabled = true
+  private_dns_zone_id     = "System" # Azure manages the private DNS zone
 
   # System node pool — runs cluster-critical components only, not application workloads
   default_node_pool {
@@ -36,7 +36,7 @@ resource "azurerm_kubernetes_cluster" "main" {
 
   network_profile {
     network_plugin    = "azure"
-    network_policy    = "calico"   # Enforces pod-to-pod traffic rules (NetworkPolicy objects)
+    network_policy    = "calico" # Enforces pod-to-pod traffic rules (NetworkPolicy objects)
     load_balancer_sku = "standard"
     outbound_type     = "loadBalancer"
   }

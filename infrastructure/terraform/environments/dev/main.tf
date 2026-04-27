@@ -37,7 +37,7 @@ module "networking" {
   vnet_cidr           = "10.10.0.0/16"
   aks_subnet_cidr     = "10.10.1.0/24"
   appgw_subnet_cidr   = "10.10.2.0/24"
-  pe_subnet_cidr      = "10.10.3.0/24"   # Dedicated subnet for private endpoint NICs
+  pe_subnet_cidr      = "10.10.3.0/24" # Dedicated subnet for private endpoint NICs
   tags                = local.tags
 }
 
@@ -61,7 +61,7 @@ module "acr" {
   aks_kubelet_identity_object_id = module.aks.kubelet_identity_object_id
   vnet_id                        = module.networking.vnet_id
   pe_subnet_id                   = module.networking.pe_subnet_id
-  public_network_access_enabled  = true   # GitHub-hosted runners need public access to push
+  public_network_access_enabled  = true # GitHub-hosted runners need public access to push
   tags                           = local.tags
 }
 
