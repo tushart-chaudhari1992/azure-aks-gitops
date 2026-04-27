@@ -745,6 +745,46 @@ chmod +x .git/hooks/pre-commit
 
 ---
 
+### Fix 6 — azurerm provider falls back to Azure CLI auth in GitHub Actions (ARM_USE_OIDC missing)
+
+**Error (in GitHub Actions validate job, after `azure/login@v2`):**
+```
+Error: Error building ARM Config: Authenticating using the Azure CLI is only supported
+as a User (not a Service Principal).
+```
+
+**Root cause:** The azurerm Terraform provider has an authentication priority chain:
+1. Managed Identity
+2. OIDC (workload identity federation) — needs `ARM_USE_OIDC=true` explicitly set
+3. Azure CLI — **this is what it falls back to**
+
+When `azure/login@v2` runs in GitHub Actions, it logs in the runner as a **Service Principal** via the OIDC token (not an interactive user). Azure CLI then holds a SP session. When azurerm tries to use the CLI for auth it rejects the SP session — only interactive user sessions are supported via CLI.
+
+The fix is to explicitly tell azurerm to use the OIDC path directly, bypassing the CLI entirely.
+
+**Fix:** Add a step immediately after every `azure/login@v2` in the validate, plan, and apply jobs to export the four required ARM environment variables:
+
+```yaml
+- name: Set ARM credentials for Terraform OIDC
+  run: |
+    echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+    echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+    echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
+    echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+```
+
+**Why `$GITHUB_ENV` and not `env:` block?** The `env:` block at the job level can't reference `secrets` that are injected per-step. Writing to `$GITHUB_ENV` makes variables available to all subsequent steps in the same job.
+
+**Files changed:**
+- `.github/workflows/terraform-dev.yml` — added the step to validate, plan, and apply jobs
+
+**How azurerm OIDC auth works:**
+1. `azure/login@v2` exchanges the GitHub OIDC JWT for an Azure AD access token and stores it in the runner's environment.
+2. With `ARM_USE_OIDC=true`, the azurerm provider calls `az account get-access-token` to retrieve the OIDC token from the login action's context — no CLI user session needed.
+3. azurerm then authenticates directly to Azure Resource Manager with that token.
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
