@@ -74,23 +74,24 @@ jobs:
           sarif_file: checkov-results.sarif
           category: checkov
 
+      - name: Install tfsec
+        run: >
+          curl -sL
+          https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64
+          -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
+
       - name: tfsec — Terraform-specific security analysis
-        # tfsec is informational here — findings appear in the Security tab
-        # but do not block the pipeline. Review them alongside Checkov output.
-        # sarif_file path is relative to working_directory, so the file lands at
-        # infrastructure/terraform/tfsec-results.sarif in the workspace.
-        uses: aquasecurity/tfsec-action@v1.0.3
-        with:
-          working_directory: infrastructure/terraform
-          format: sarif
-          sarif_file: tfsec-results.sarif
-          soft_fail: true
+        # Informational only — findings go to the Security tab, do not block the pipeline.
+        # Running via CLI (not the action) gives us a predictable output path in GITHUB_WORKSPACE.
+        # || true ensures a non-zero tfsec exit code never fails the step.
+        run: |
+          tfsec infrastructure/terraform --format sarif --out tfsec-results.sarif || true
 
       - name: Upload tfsec results to GitHub Security tab
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: infrastructure/terraform/tfsec-results.sarif
+          sarif_file: tfsec-results.sarif
           category: tfsec
 
   # ── 2. VALIDATE ──────────────────────────────────────────────────────────────

@@ -920,6 +920,46 @@ If HTTP→HTTPS redirect via Application Gateway is implemented later, the TCP c
 
 ---
 
+### Fix 9 — tfsec SARIF file never written (`aquasecurity/tfsec-action@v1.0.3` unreliable)
+
+**Error (in GitHub Actions security job):**
+```
+Path does not exist: tfsec-results.sarif
+Path does not exist: infrastructure/terraform/tfsec-results.sarif
+```
+
+**Root cause:** `aquasecurity/tfsec-action@v1.0.3` does not reliably write the SARIF output file. The action wraps tfsec in a Docker container and the file may be written inside the container filesystem rather than the runner workspace. The `sarif_file` and `working_directory` parameters interact inconsistently across action versions — changing the upload path just moved the error, not solved it.
+
+**Fix:** Replace the action entirely with a direct CLI install + run:
+
+```yaml
+- name: Install tfsec
+  run: >
+    curl -sL
+    https://github.com/aquasecurity/tfsec/releases/latest/download/tfsec-linux-amd64
+    -o /usr/local/bin/tfsec && chmod +x /usr/local/bin/tfsec
+
+- name: tfsec — Terraform-specific security analysis
+  run: |
+    tfsec infrastructure/terraform --format sarif --out tfsec-results.sarif || true
+
+- name: Upload tfsec results to GitHub Security tab
+  if: always()
+  uses: github/codeql-action/upload-sarif@v3
+  with:
+    sarif_file: tfsec-results.sarif
+    category: tfsec
+```
+
+**Why CLI install instead of the action:**
+- The binary runs directly on the runner — output path is `$GITHUB_WORKSPACE/tfsec-results.sarif`, exactly where the upload step expects it
+- `|| true` ensures a non-zero tfsec exit (findings present) never fails the step — tfsec remains informational
+- `latest` download always gets the current release without pinning a potentially broken action version
+
+**Files changed:** `.github/workflows/terraform-dev.yml`
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
