@@ -1,0 +1,35 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boutique-dev
+  namespace: argocd
+  # Cascade delete — removing this Application also removes the boutique-dev namespace
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/tushart-chaudhari1992/azure-aks-gitops.git
+    targetRevision: main
+    path: kubernetes/overlays/dev
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: boutique-dev
+
+  syncPolicy:
+    # Automated sync — ArgoCD applies changes as soon as it detects a Git diff
+    # This is safe for dev; prod uses manual sync with approval (see boutique-prod.yaml)
+    automated:
+      prune: true      # Removes resources deleted from Git
+      selfHeal: true   # Reverts manual kubectl changes to match Git state
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+    retry:
+      limit: 3
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m

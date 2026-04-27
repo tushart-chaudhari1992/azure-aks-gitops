@@ -1,0 +1,89 @@
+# .dockerignore — applied when building from the repo root.
+# Each service's build context is src/<service>/ so this primarily affects
+# any repo-root builds. Place a per-service .dockerignore inside src/<service>/
+# for tighter control over individual image build contexts.
+
+# ── GIT ──────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ── CI/CD ────────────────────────────────────────────────────────────────────
+.github/
+.azuredevops/
+.claude/
+
+# ── INFRASTRUCTURE (not needed inside any container) ─────────────────────────
+infrastructure/
+gitops/
+kubernetes/
+docs/
+*.md
+CLAUDE.md
+
+# ── TERRAFORM ────────────────────────────────────────────────────────────────
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfplan
+*.tfvars
+.terraform.lock.hcl
+
+# ── SECRETS AND CREDENTIALS ───────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+kubeconfig
+*.kubeconfig
+secrets.yaml
+*-secret.yaml
+*-secrets.yaml
+
+# ── TEST FILES ────────────────────────────────────────────────────────────────
+*_test.go
+*_test.py
+**/*_test.*
+test/
+tests/
+__tests__/
+*.test.js
+*.spec.js
+
+# ── DEVELOPMENT DEPENDENCIES ──────────────────────────────────────────────────
+node_modules/
+vendor/
+.venv/
+venv/
+
+# ── BUILD ARTIFACTS ──────────────────────────────────────────────────────────
+dist/
+build/
+target/
+bin/
+obj/
+*.exe
+*.class
+*.jar
+
+# ── LOGS AND TEMP ─────────────────────────────────────────────────────────────
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+
+# ── SECURITY SCAN OUTPUT ──────────────────────────────────────────────────────
+*.sarif
+trivy-*.json
+gitleaks-report.*
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp

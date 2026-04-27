@@ -1,0 +1,263 @@
+name: Terraform — Dev Infrastructure
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'infrastructure/terraform/**'
+      - '.github/workflows/terraform-dev.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'infrastructure/terraform/**'
+      - '.github/workflows/terraform-dev.yml'
+
+env:
+  TF_VERSION: "1.7.5"
+  WORKING_DIR: infrastructure/terraform/environments/dev
+
+permissions:
+  id-token: write        # OIDC auth to Azure — no stored client secrets
+  contents: read
+  pull-requests: write   # Post plan output as a PR comment
+  security-events: write # Upload SARIF findings to GitHub Security tab
+
+jobs:
+
+  # ── 1. SECURITY SCAN ─────────────────────────────────────────────────────────
+  # Runs in parallel with validate. Both must pass before plan is allowed.
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkov — IaC security scan
+        # Checkov checks for security misconfigurations (open ports, missing encryption,
+        # overly permissive IAM, etc.) and fails the pipeline on any HIGH finding.
+        # CKV_AZURE_166: ACR public access is intentionally enabled for dev so
+        # GitHub-hosted runners (public internet) can push images. Prod keeps it off.
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: infrastructure/terraform
+          framework: terraform
+          output_format: cli,sarif
+          output_file_path: console,checkov-results.sarif
+          skip_check: CKV_AZURE_166
+          soft_fail: false
+
+      - name: Upload Checkov results to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: checkov-results.sarif
+          category: checkov
+
+      - name: tfsec — Terraform-specific security analysis
+        # tfsec is informational here — findings appear in the Security tab
+        # but do not block the pipeline. Review them alongside Checkov output.
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          working_directory: infrastructure/terraform
+          format: sarif
+          sarif_file: tfsec-results.sarif
+          soft_fail: true
+
+      - name: Upload tfsec results to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: tfsec-results.sarif
+          category: tfsec
+
+  # ── 2. VALIDATE ──────────────────────────────────────────────────────────────
+  validate:
+    name: Validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: terraform fmt check
+        # Enforces consistent formatting across all modules, not just the env entry point.
+        # Fail fast here so heavier jobs don't run on poorly formatted code.
+        run: terraform fmt -check -recursive infrastructure/terraform/
+
+      - name: terraform init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init
+
+      - name: terraform validate
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform validate
+
+      - name: Setup TFLint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: TFLint — init plugins
+        working-directory: infrastructure/terraform
+        run: tflint --init
+
+      - name: TFLint — lint
+        working-directory: ${{ env.WORKING_DIR }}
+        run: tflint --format compact
+
+  # ── 3. PLAN ──────────────────────────────────────────────────────────────────
+  # Runs only after security AND validate both pass.
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    needs: [security, validate]
+    outputs:
+      exitcode: ${{ steps.plan.outputs.exitcode }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          # terraform_wrapper must be false to capture -detailed-exitcode correctly
+          terraform_wrapper: false
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: terraform init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init
+
+      - name: terraform plan
+        id: plan
+        working-directory: ${{ env.WORKING_DIR }}
+        # -detailed-exitcode: 0=no changes, 1=error, 2=changes detected
+        # tee writes to file AND stdout so logs are still visible in Actions UI
+        run: |
+          set +e
+          terraform plan -out=tfplan.dev -detailed-exitcode 2>&1 | tee plan-output.txt
+          echo "exitcode=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
+          set -e
+
+      - name: Upload plan artifact
+        # Only upload when there are changes (exitcode=2) — nothing to apply otherwise
+        if: steps.plan.outputs.exitcode == '2'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-dev
+          path: ${{ env.WORKING_DIR }}/tfplan.dev
+          retention-days: 1
+
+      - name: Post plan output as PR comment
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const raw = fs.readFileSync('${{ env.WORKING_DIR }}/plan-output.txt', 'utf8');
+            const plan = raw.length > 60000
+              ? raw.slice(0, 60000) + '\n\n...[truncated — see full output in Actions logs]'
+              : raw;
+            const code = '${{ steps.plan.outputs.exitcode }}';
+            const badge = code === '0' ? '✅ No changes'
+                        : code === '2' ? '⚠️ Changes detected'
+                        : '❌ Plan failed';
+
+            const body = [
+              `## Terraform Plan — Dev ${badge}`,
+              '',
+              '<details><summary>Show plan output</summary>',
+              '',
+              '```hcl',
+              plan,
+              '```',
+              '</details>',
+              '',
+              `*Triggered by @${{ github.actor }} · commit \`${{ github.sha }}\`*`
+            ].join('\n');
+
+            // Replace previous bot comment to keep the PR clean
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            for (const c of comments) {
+              if (c.body.includes('## Terraform Plan — Dev')) {
+                await github.rest.issues.deleteComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  comment_id: c.id,
+                });
+              }
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+
+      - name: Fail if plan errored
+        if: steps.plan.outputs.exitcode == '1'
+        run: |
+          echo "terraform plan returned an error — review the output above"
+          exit 1
+
+  # ── 4. APPLY ─────────────────────────────────────────────────────────────────
+  # Only runs on push to main (not PRs), only when the plan detected changes,
+  # and only after a human approves in GitHub → Settings → Environments → dev.
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    needs: plan
+    if: |
+      github.ref == 'refs/heads/main' &&
+      github.event_name == 'push' &&
+      needs.plan.outputs.exitcode == '2'
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: terraform init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init
+
+      - name: Download approved plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-dev
+          path: ${{ env.WORKING_DIR }}
+
+      - name: terraform apply
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform apply -auto-approve tfplan.dev

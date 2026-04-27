@@ -1,0 +1,33 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: boutique-prod
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/tushart-chaudhari1992/azure-aks-gitops.git
+    targetRevision: main
+    path: kubernetes/overlays/prod
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: boutique-prod
+
+  syncPolicy:
+    # No automated sync for prod — a human must click Sync in the ArgoCD UI or run
+    # `argocd app sync boutique-prod` after reviewing the diff.
+    # This gives a manual gate between a Git commit and production rollout.
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - RespectIgnoreDifferences=true
+    retry:
+      limit: 2
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

@@ -1,0 +1,214 @@
+name: Build, Scan and Push to ACR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - '.github/workflows/build-push.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - '.github/workflows/build-push.yml'
+
+env:
+  ACR_LOGIN_SERVER: ${{ vars.ACR_LOGIN_SERVER }}
+
+permissions:
+  id-token: write        # OIDC auth to Azure
+  contents: write        # Commit updated image tags back to repo
+  pull-requests: write
+  security-events: write # Upload SARIF to GitHub Security tab
+
+jobs:
+
+  # ── 1. SECRET LEAK SCAN ──────────────────────────────────────────────────────
+  # Scans the full git history for accidentally committed secrets (API keys,
+  # passwords, tokens). Runs before any build so secrets are caught immediately.
+  secret-scan:
+    name: Secret leak scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history required — Gitleaks scans every commit, not just HEAD
+
+      - name: Gitleaks — detect secrets in git history
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── 2. SAST ──────────────────────────────────────────────────────────────────
+  # Static Application Security Testing — analyses source code for security
+  # vulnerabilities without running it (SQLi, XSS, hardcoded creds, etc.).
+  sast:
+    name: SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Semgrep — multi-language static analysis
+        # Semgrep OSS runs without an account. Rules cover OWASP Top 10 across
+        # Go, Python, JavaScript, Java, and C# (all languages in this repo).
+        # Set SEMGREP_APP_TOKEN secret to enable Semgrep Cloud findings dashboard.
+        uses: semgrep/semgrep-action@v1
+        with:
+          config: >-
+            p/security-audit
+            p/owasp-top-ten
+            p/golang
+            p/python
+            p/javascript
+            p/java
+        env:
+          SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+
+  # ── 3. SCA ───────────────────────────────────────────────────────────────────
+  # Software Composition Analysis — scans third-party dependencies for known
+  # CVEs (go.sum, requirements.txt, package-lock.json, pom.xml, etc.).
+  sca:
+    name: SCA — dependency vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy — scan dependency manifests in src/
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: src/
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: sarif
+          output: trivy-sca.sarif
+          exit-code: '1'
+
+      - name: Upload SCA results to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-sca.sarif
+          category: trivy-sca
+
+  # ── 4. BUILD AND PUSH ────────────────────────────────────────────────────────
+  # Only runs after all three security gates pass. Builds each microservice
+  # image and pushes to ACR with an immutable sha-<commit> tag.
+  build-push:
+    name: Build and push images
+    runs-on: ubuntu-latest
+    needs: [secret-scan, sast, sca]
+    outputs:
+      image_tag: ${{ steps.tag.outputs.IMAGE_TAG }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        run: az acr login --name ${{ vars.ACR_NAME }}
+
+      - name: Set image tag
+        id: tag
+        run: echo "IMAGE_TAG=sha-${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Build and push all service images
+        run: |
+          SERVICES=(
+            frontend cartservice productcatalogservice currencyservice
+            paymentservice shippingservice emailservice checkoutservice
+            recommendationservice adservice
+          )
+          for SERVICE in "${SERVICES[@]}"; do
+            docker build \
+              -t ${{ env.ACR_LOGIN_SERVER }}/${SERVICE}:${{ steps.tag.outputs.IMAGE_TAG }} \
+              -f src/${SERVICE}/Dockerfile \
+              src/${SERVICE}
+            docker push ${{ env.ACR_LOGIN_SERVER }}/${SERVICE}:${{ steps.tag.outputs.IMAGE_TAG }}
+          done
+
+  # ── 5. IMAGE SCAN ────────────────────────────────────────────────────────────
+  # Trivy scans each pushed image for OS and package vulnerabilities.
+  # Matrix runs all 10 services in parallel. fail-fast: false ensures all
+  # images are scanned even if one has critical findings.
+  image-scan:
+    name: Image scan — ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    needs: build-push
+    strategy:
+      matrix:
+        service:
+          - frontend
+          - cartservice
+          - productcatalogservice
+          - currencyservice
+          - paymentservice
+          - shippingservice
+          - emailservice
+          - checkoutservice
+          - recommendationservice
+          - adservice
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Login to ACR
+        run: az acr login --name ${{ vars.ACR_NAME }}
+
+      - name: Trivy — scan ${{ matrix.service }} image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.service }}:${{ needs.build-push.outputs.image_tag }}
+          scanners: vuln
+          severity: CRITICAL
+          format: sarif
+          output: trivy-image-${{ matrix.service }}.sarif
+          exit-code: '1'
+
+      - name: Upload image scan results to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image-${{ matrix.service }}.sarif
+          category: trivy-image-${{ matrix.service }}
+
+  # ── 6. UPDATE GITOPS TAGS ────────────────────────────────────────────────────
+  # Only runs on main after all images pass scanning. Updates the Kustomize
+  # overlay so ArgoCD detects the new tag and syncs to the dev cluster.
+  update-tags:
+    name: Update dev image tags
+    runs-on: ubuntu-latest
+    needs: image-scan
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update dev overlay image tags
+        run: |
+          cd kubernetes/overlays/dev
+          for SERVICE in frontend cartservice productcatalogservice currencyservice \
+                         paymentservice shippingservice emailservice checkoutservice \
+                         recommendationservice adservice; do
+            kustomize edit set image \
+              gcr.io/google-samples/microservices-demo/${SERVICE}=${{ env.ACR_LOGIN_SERVER }}/${SERVICE}:${{ needs.build-push.outputs.image_tag }}
+          done
+
+      - name: Commit updated image tags
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add kubernetes/overlays/dev/kustomization.yaml
+          git commit -m "ci: update dev image tags to ${{ needs.build-push.outputs.image_tag }}" || echo "No changes to commit"
+          git push

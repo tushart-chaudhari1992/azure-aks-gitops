@@ -1,0 +1,79 @@
+name: DAST — Dynamic Application Security Testing
+
+# Two triggers:
+# 1. Automatic — fires after build-push.yml completes on main (ArgoCD needs ~2min to sync first)
+# 2. Manual — run on-demand against any URL (useful for testing specific releases)
+on:
+  workflow_run:
+    workflows: ["Build, Scan and Push to ACR"]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: 'Frontend URL to scan (e.g. http://20.x.x.x)'
+        required: true
+        default: ''
+      fail_on_findings:
+        description: 'Fail pipeline if ZAP finds issues'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true', 'false']
+
+permissions:
+  contents: read
+  security-events: write  # Upload SARIF to GitHub Security tab
+  issues: write           # ZAP action creates a GitHub issue with findings
+
+env:
+  # For automatic trigger: set FRONTEND_URL as a repo variable after ArgoCD deploys.
+  # For manual trigger: uses the workflow_dispatch input.
+  FRONTEND_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.target_url || vars.DEV_FRONTEND_URL }}
+
+jobs:
+  dast:
+    name: OWASP ZAP baseline scan
+    runs-on: ubuntu-latest
+    # For automatic trigger, only run if the upstream workflow succeeded
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Wait for ArgoCD to sync
+        # ArgoCD detects the tag update commit and syncs within ~60s.
+        # Only needed for the automatic trigger — manual runs assume the app is already up.
+        if: github.event_name == 'workflow_run'
+        run: sleep 90
+
+      - name: Validate target URL is set
+        run: |
+          if [ -z "${{ env.FRONTEND_URL }}" ]; then
+            echo "FRONTEND_URL is not set."
+            echo "Set DEV_FRONTEND_URL as a GitHub Actions variable (repo → Settings → Variables)"
+            echo "or pass target_url when triggering manually."
+            exit 1
+          fi
+          echo "Scanning target: ${{ env.FRONTEND_URL }}"
+
+      - name: OWASP ZAP — baseline scan
+        # Baseline scan: passive scan only (no active attack).
+        # Safe to run against dev — it does not modify data or send payloads.
+        # For a full active scan, switch to zaproxy/action-full-scan.
+        uses: zaproxy/action-baseline@v0.13.0
+        with:
+          target: ${{ env.FRONTEND_URL }}
+          rules_file_name: .zap/rules.tsv
+          fail_action: ${{ github.event_name == 'workflow_dispatch' && inputs.fail_on_findings || 'false' }}
+          artifact_name: zap-report
+          issue_title: "ZAP DAST Findings — ${{ github.sha }}"
+
+      - name: Upload ZAP SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: zap-results.sarif
+          category: owasp-zap
+        continue-on-error: true  # ZAP SARIF may not exist if the scan errored early

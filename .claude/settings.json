@@ -1,0 +1,38 @@
+{
+  "mcpServers": {
+
+    "hashicorp.terraform": {
+      "command": "npx",
+      "args": ["-y", "@hashicorp/terraform-mcp-server@latest"],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+
+    "kubernetes": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-kubernetes@latest"],
+      "env": {
+        "KUBECONFIG": "${env:KUBECONFIG}",
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    },
+
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github@latest"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "${env:GITHUB_TOKEN}"
+      }
+    },
+
+    "azure-cost-estimator": {
+      "command": "uvx",
+      "args": ["awslabs.aws-pricing-mcp-server@latest"],
+      "env": {
+        "FASTMCP_LOG_LEVEL": "ERROR"
+      }
+    }
+
+  }
+}

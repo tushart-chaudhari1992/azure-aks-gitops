@@ -1,0 +1,60 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - src/**
+
+pool:
+  name: self-hosted-azure
+
+variables:
+  - group: acr-config        # Contains ACR_LOGIN_SERVER, ACR_NAME
+  - name: IMAGE_TAG
+    value: "sha-$(Build.SourceVersion)"
+
+stages:
+  - stage: BuildPush
+    displayName: "Build and push images"
+    jobs:
+      - job: Build
+        displayName: "Docker build + push to ACR"
+        steps:
+          - task: AzureCLI@2
+            displayName: "Login to ACR"
+            inputs:
+              azureSubscription: "boutique-service-connection"
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: az acr login --name $(ACR_NAME)
+
+          - script: |
+              SERVICES=(
+                frontend cartservice productcatalogservice currencyservice
+                paymentservice shippingservice emailservice checkoutservice
+                recommendationservice adservice
+              )
+              for SERVICE in "${SERVICES[@]}"; do
+                docker build \
+                  -t $(ACR_LOGIN_SERVER)/${SERVICE}:$(IMAGE_TAG) \
+                  -f src/${SERVICE}/Dockerfile \
+                  src/${SERVICE}
+                docker push $(ACR_LOGIN_SERVER)/${SERVICE}:$(IMAGE_TAG)
+              done
+            displayName: "Build and push all services"
+
+          - script: |
+              cd kubernetes/overlays/dev
+              for SERVICE in frontend cartservice productcatalogservice currencyservice \
+                             paymentservice shippingservice emailservice checkoutservice \
+                             recommendationservice adservice; do
+                kustomize edit set image \
+                  gcr.io/google-samples/microservices-demo/${SERVICE}=$(ACR_LOGIN_SERVER)/${SERVICE}:$(IMAGE_TAG)
+              done
+              git config user.email "ado-pipeline@boutique.internal"
+              git config user.name "ADO Pipeline"
+              git add kubernetes/overlays/dev/kustomization.yaml
+              git commit -m "ci: update dev image tags to $(IMAGE_TAG)" || echo "No changes"
+              git push origin HEAD:main
+            displayName: "Update dev image tags in GitOps overlay"

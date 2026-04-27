@@ -1,0 +1,47 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: boutique-prod
+
+resources:
+  - ../../base
+  - patch-replicas.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - resourcequota.yaml
+
+# CI pipeline updates newTag here on every successful build — only after dev promotion
+images:
+  - name: gcr.io/google-samples/microservices-demo/frontend
+    newName: boutiqueprodacr.azurecr.io/frontend
+    newTag: latest
+  - name: gcr.io/google-samples/microservices-demo/cartservice
+    newName: boutiqueprodacr.azurecr.io/cartservice
+    newTag: latest
+  - name: gcr.io/google-samples/microservices-demo/productcatalogservice
+    newName: boutiqueprodacr.azurecr.io/productcatalogservice
+    newTag: latest
+  - name: gcr.io/google-samples/microservices-demo/currencyservice
+    newName: boutiqueprodacr.azurecr.io/currencyservice
+    newTag: latest
+  - name: gcr.io/google-samples/microservices-demo/paymentservice
+    newName: boutiqueprodacr.azurecr.io/paymentservice
+    newTag: latest
+  - name: gcr.io/google-samples/microservices-demo/shippingservice
+    newName: boutiqueprodacr.azurecr.io/shippingservice
+    newTag: latest
+  - name: gcr.io/google-samples/microservices-demo/emailservice
+    newName: boutiqueprodacr.azurecr.io/emailservice
+    newTag: latest
+  - name: gcr.io/google-samples/microservices-demo/checkoutservice
+    newName: boutiqueprodacr.azurecr.io/checkoutservice
+    newTag: latest
+  - name: gcr.io/google-samples/microservices-demo/recommendationservice
+    newName: boutiqueprodacr.azurecr.io/recommendationservice
+    newTag: latest
+  - name: gcr.io/google-samples/microservices-demo/adservice
+    newName: boutiqueprodacr.azurecr.io/adservice
+    newTag: latest
+
+commonLabels:
+  environment: prod

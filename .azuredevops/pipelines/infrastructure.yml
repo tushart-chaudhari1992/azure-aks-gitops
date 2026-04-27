@@ -1,0 +1,126 @@
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - infrastructure/terraform/**
+
+pool:
+  # Self-hosted runner inside the VNet — required because AKS and state storage are private
+  name: self-hosted-azure
+
+variables:
+  - group: terraform-secrets        # Contains ARM_CLIENT_ID, ARM_CLIENT_SECRET, ARM_TENANT_ID, ARM_SUBSCRIPTION_ID
+  - name: TF_VERSION
+    value: "1.7.5"
+  - name: WORKING_DIR_DEV
+    value: infrastructure/terraform/environments/dev
+  - name: WORKING_DIR_PROD
+    value: infrastructure/terraform/environments/prod
+
+stages:
+
+  # ── DEV ──────────────────────────────────────────────────────────────────────
+  - stage: TerraformDev
+    displayName: "Terraform — Dev"
+    jobs:
+      - job: Plan
+        displayName: "terraform plan (dev)"
+        steps:
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: $(TF_VERSION)
+
+          - script: terraform init
+            displayName: "terraform init"
+            workingDirectory: $(WORKING_DIR_DEV)
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+
+          - script: terraform plan -out=tfplan.dev
+            displayName: "terraform plan"
+            workingDirectory: $(WORKING_DIR_DEV)
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+
+          - task: PublishPipelineArtifact@1
+            inputs:
+              targetPath: $(WORKING_DIR_DEV)/tfplan.dev
+              artifact: tfplan-dev
+
+      - job: Apply
+        displayName: "terraform apply (dev)"
+        dependsOn: Plan
+        # Manual approval gate — reviewer sees the plan output before approving apply
+        condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+        steps:
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              artifact: tfplan-dev
+              path: $(WORKING_DIR_DEV)
+
+          - task: TerraformInstaller@1
+            inputs:
+              terraformVersion: $(TF_VERSION)
+
+          - script: terraform init
+            displayName: "terraform init"
+            workingDirectory: $(WORKING_DIR_DEV)
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+
+          - script: terraform apply -auto-approve tfplan.dev
+            displayName: "terraform apply"
+            workingDirectory: $(WORKING_DIR_DEV)
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+
+  # ── PROD ─────────────────────────────────────────────────────────────────────
+  - stage: TerraformProd
+    displayName: "Terraform — Prod"
+    dependsOn: TerraformDev
+    # Prod stage requires a manual approval in Azure DevOps Environments before running
+    jobs:
+      - deployment: Apply
+        displayName: "terraform apply (prod)"
+        environment: production          # Configure approval gates on this environment in ADO
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: TerraformInstaller@1
+                  inputs:
+                    terraformVersion: $(TF_VERSION)
+
+                - script: terraform init
+                  displayName: "terraform init"
+                  workingDirectory: $(WORKING_DIR_PROD)
+                  env:
+                    ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+                    ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+                    ARM_TENANT_ID: $(ARM_TENANT_ID)
+                    ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+
+                - script: |
+                    terraform plan -out=tfplan.prod
+                    terraform apply -auto-approve tfplan.prod
+                  displayName: "terraform plan + apply"
+                  workingDirectory: $(WORKING_DIR_PROD)
+                  env:
+                    ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+                    ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+                    ARM_TENANT_ID: $(ARM_TENANT_ID)
+                    ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
