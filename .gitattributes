@@ -1,0 +1,22 @@
+# Normalize all text files to LF on commit (prevents CRLF/LF conflicts across OS)
+* text=auto eol=lf
+
+# Force these to always be LF
+*.sh text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.tf text eol=lf
+*.hcl text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.tsv text eol=lf
+
+# Binaries — no line ending conversion
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.gz binary
+*.zip binary
+*.tar binary
