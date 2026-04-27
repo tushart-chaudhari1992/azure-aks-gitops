@@ -497,6 +497,48 @@ az aks command invoke \
 
 ---
 
+## Impact of Not Adding .gitignore, .dockerignore and .gitattributes
+
+### .gitignore — what gets accidentally committed without it
+
+| File/folder accidentally committed | Impact |
+|------------------------------------|--------|
+| `.terraform/` | 200–500 MB of provider binaries pushed to GitHub. Repo becomes unusable to clone. Repeated on every `terraform init`. |
+| `*.tfstate` | State files contain **plaintext resource IDs, connection strings, and sometimes secrets** (Key Vault URIs, AKS kubeconfig). Anyone with repo read access can extract them. |
+| `*.tfplan` | Plan files encode the full diff including sensitive values marked `(sensitive)` in CLI output. They are not encrypted. |
+| `.env` / `*.key` / `*.pem` | Direct secret exposure. GitHub scans for some patterns and alerts, but the secret is already in history and must be rotated even after deletion. |
+| `kubeconfig` | Grants full cluster access to anyone who obtains it. Private AKS clusters are then reachable via `az aks command invoke`. |
+| `*.sarif` / scan reports | Leak vulnerability details about your own application — helps attackers target known weak points. |
+
+**Key rule:** Once a secret is committed to git, it is in the history forever. Even `git rm` + force-push does not remove it from forks, local clones, or GitHub's caches. You must rotate the credential immediately.
+
+---
+
+### .dockerignore — what goes into the image without it
+
+| Included without .dockerignore | Impact |
+|-------------------------------|--------|
+| `infrastructure/` + `*.tfvars` | Terraform state paths, SP Object IDs, and subscription IDs baked into the image layer. Extractable via `docker history` or `docker save`. |
+| `.env` files | Secrets inside the image. Anyone who pulls the image from ACR (or a leaked registry) has the secrets. |
+| `node_modules/` / `vendor/` | Development dependencies with test/dev packages included in the production image. Larger attack surface, larger image (often 3–10× bigger). |
+| `test/` folders | Test code and fixtures, sometimes containing mock credentials or real-looking test data. |
+| `.git/` | Full repository history inside the container — leaks every past commit, author, and branch name. |
+
+**Practical effect:** Without .dockerignore, a 50 MB app image can become 800 MB+, pull times spike, and cold-start latency on the cluster increases significantly.
+
+---
+
+### .gitattributes — what breaks without it
+
+| Scenario | Impact |
+|----------|--------|
+| Windows developer commits CRLF line endings | Linux CI runner (Ubuntu) receives files with `\r\n`. Shell scripts fail with `bad interpreter: No such file or directory`. YAML and HCL parsers may reject them. |
+| Mixed line endings in the same file | Git diffs show entire files as changed even when only one line was edited — PR reviews become unreadable. |
+| Terraform HCL files with CRLF | `terraform fmt` on Linux sees different line endings and re-formats every file on every run, creating spurious commits in CI. |
+| GitHub Actions YAML with CRLF | The Actions runner may fail to parse the workflow correctly, producing confusing syntax errors unrelated to the actual YAML content. |
+
+---
+
 ## Fixes Log — HCL Syntax Errors Found During `terraform init`
 
 Documented here for reference: what was wrong, why, and what was changed.
