@@ -45,6 +45,11 @@ azure-aks-gitops/
 └── .azuredevops/pipelines/        ← Azure DevOps: Terraform infra + image build (ADO variant)
 ```
 
+## Git Commits
+
+- Never include `Co-Authored-By: Claude` or any Claude/AI attribution in commit messages
+- Use only the subject line and body describing what changed and why — no trailers
+
 ## Key Conventions
 
 - **Image tags**: always `sha-<git-commit-sha>` — never `latest` in a real deployment
