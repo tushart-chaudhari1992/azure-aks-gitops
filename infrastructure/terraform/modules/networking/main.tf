@@ -42,8 +42,9 @@ resource "azurerm_subnet_network_security_group_association" "aks" {
   network_security_group_id = azurerm_network_security_group.aks.id
 }
 
-# Application Gateway subnet NSG — AppGW v2 requires inbound on 65200-65535 (health probe ports)
-# and outbound Internet; all other traffic should be explicitly controlled.
+# Application Gateway subnet NSG — AppGW v2 requires inbound on 65200-65535 (health probe ports).
+# Port 80 is intentionally absent: force all clients to HTTPS. If HTTP→HTTPS redirect via AppGW
+# is needed later, add an AllowHTTPInbound rule at that point with documented justification.
 resource "azurerm_network_security_group" "appgw" {
   name                = "${var.prefix}-appgw-nsg"
   location            = var.location
@@ -69,18 +70,6 @@ resource "azurerm_network_security_group" "appgw" {
     protocol                   = "Tcp"
     source_port_range          = "*"
     destination_port_range     = "443"
-    source_address_prefix      = "Internet"
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "AllowHTTPInbound"
-    priority                   = 120
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    source_port_range          = "*"
-    destination_port_range     = "80"
     source_address_prefix      = "Internet"
     destination_address_prefix = "*"
   }

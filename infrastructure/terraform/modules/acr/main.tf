@@ -9,6 +9,18 @@ resource "azurerm_container_registry" "main" {
   # Prod: false — all traffic must flow through the private endpoint.
   public_network_access_enabled = var.public_network_access_enabled
 
+  # Automatically delete untagged image manifests after 7 days.
+  # Untagged manifests are orphaned layers that consume storage and inflate attack surface
+  # (old vulnerable image layers remain pullable by digest even when not referenced by any tag).
+  # Requires Standard or Premium SKU — dynamic block skips this on Basic (dev).
+  dynamic "retention_policy" {
+    for_each = var.sku != "Basic" ? [1] : []
+    content {
+      days    = 7
+      enabled = true
+    }
+  }
+
   tags = var.tags
 }
 
