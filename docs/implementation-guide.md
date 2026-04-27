@@ -785,6 +785,77 @@ The fix is to explicitly tell azurerm to use the OIDC path directly, bypassing t
 
 ---
 
+### Fix 7 — Checkov security scan failures (14 checks across ACR, AKS, networking)
+
+**Error (in GitHub Actions security job):**
+```
+Check: CKV_AZURE_141: "Ensure AKS local admin account is disabled"   FAILED
+Check: CKV_AZURE_171: "Ensure AKS cluster upgrade channel is chosen"  FAILED
+Check: CKV_AZURE_116: "Ensure that AKS uses Azure Policies Add-on"    FAILED
+Check: CKV_AZURE_168: "Ensure AKS nodes have minimum 50 pods"         FAILED
+Check: CKV_AZURE_172: "Ensure autorotation of Secrets Store CSI"      FAILED
+Check: CKV2_AZURE_31: "Ensure VNET subnet configured with NSG"        FAILED
+Check: CKV_AZURE_233/237/165/163/164/117/227/170/226/139: ...         FAILED
+Path does not exist: tfsec-results.sarif
+```
+
+---
+
+#### Checks fixed in Terraform code
+
+These are free controls that add real security value with no cost overhead.
+
+| Check | Control added | File | Impact of NOT fixing |
+|---|---|---|---|
+| `CKV_AZURE_141` | `local_account_disabled = true` | `modules/aks/main.tf` | Any holder of the static kubeconfig has cluster-admin regardless of Azure AD policy. An exfiltrated kubeconfig becomes a permanent backdoor. |
+| `CKV_AZURE_171` | `automatic_channel_upgrade = "stable"` | `modules/aks/main.tf` | Cluster falls behind on Kubernetes CVE patches. Each minor version left un-upgraded is a window for known exploits (e.g., container escapes, privilege escalation). |
+| `CKV_AZURE_116` | `azure_policy_enabled = true` | `modules/aks/main.tf` | No guardrails on what pods can do — privileged containers, missing resource limits, host-path mounts all allowed by default. Azure Policy blocks these at admission time. |
+| `CKV_AZURE_168` | `max_pods = 110` on both node pools | `modules/aks/main.tf` | Low pod density means you need more nodes for the same workload. Default of 30 on Azure CNI is tight for Boutique (10 services + system pods). |
+| `CKV_AZURE_172` | `key_vault_secrets_provider { secret_rotation_enabled = true }` | `modules/aks/main.tf` | Pods see stale secret values after rotation. Without autorotation, a rotated certificate or password requires a pod restart or redeployment to take effect — causing downtime during incident response. |
+| `CKV2_AZURE_31` | Added NSG + association for `appgw-subnet` and `pe-subnet` | `modules/networking/main.tf` | Subnets without NSGs have no Layer-4 traffic controls. Any resource accidentally deployed into those subnets is reachable from anywhere in the VNet by default. |
+
+**What was added to networking module:**
+- `appgw-nsg`: allows inbound 65200-65535 (required by AppGW v2 health probes), 443, 80 from Internet; denies everything else
+- `pe-nsg`: explicitly denies Internet inbound — private endpoints should only be reachable from within the VNet
+
+---
+
+#### Checks skipped via Checkov `skip_check` (and why)
+
+These require Premium SKU, paid Microsoft add-ons, or subscription-level feature flags that are out of scope for this playbook. Skipping them keeps the pipeline green without compromising the controls that *can* be implemented cost-effectively.
+
+| Check | What it requires | Why skipped | Impact of skipping |
+|---|---|---|---|
+| `CKV_AZURE_139` / `CKV_AZURE_166` | ACR `public_network_access_enabled = false` | Dev intentionally sets `true` so GitHub-hosted runners (public internet) can push images. Prod overrides this to `false` via the module variable. | Dev ACR is reachable from the internet on port 443 — acceptable because ACR authentication (AAD token or managed identity) is still enforced. |
+| `CKV_AZURE_233` | ACR zone redundancy | Premium SKU only (~3× cost vs Standard). Not needed for a dev/demo cluster. | Single availability zone — an AZ outage would make the registry unavailable. Acceptable for non-production. |
+| `CKV_AZURE_237` | ACR dedicated data endpoints | Premium SKU only. Dedicated endpoints prevent data exfiltration via shared endpoint. | Shared data endpoint used — in theory an attacker who can reach the ACR endpoint could use it for data exfil. Mitigated by private endpoint in prod. |
+| `CKV_AZURE_165` | ACR geo-replication | Premium SKU only. Needed for multi-region deployments. | Single-region registry — a regional outage affects all environments. Out of scope for single-region playbook. |
+| `CKV_AZURE_163` | ACR vulnerability scanning | Requires Microsoft Defender for Containers (~$7/node/month). Scans images in ACR for OS and package CVEs. | Without this, CVEs in pushed images are not caught at rest in ACR. Mitigated by Trivy image scan in the build pipeline (catches CVEs at build time before push). |
+| `CKV_AZURE_164` | ACR trusted images (Docker Content Trust) | Requires DCT key management infrastructure and a separate signing workflow. | Unsigned images can be pulled — no cryptographic proof they haven't been tampered with. Mitigated by private endpoint (only VNet can pull) and Trivy scan at build time. |
+| `CKV_AZURE_117` | AKS disk encryption set | Requires a Key Vault key + `azurerm_disk_encryption_set` resource + subscription permissions. | OS and data disks are encrypted with Microsoft-managed keys (PMK) not customer-managed keys (CMK). PMK is encrypted at rest — absence of CMK is a compliance gap, not a plain-text risk. |
+| `CKV_AZURE_227` | AKS host encryption | Requires the `EncryptionAtHost` feature flag enabled at the Azure subscription level via `az feature register`. | Temp disks and caches on nodes are not encrypted. Only a concern if sensitive data is written to temp disk (rare for Kubernetes workloads). |
+| `CKV_AZURE_170` | AKS paid SLA tier | Uptime SLA tier adds ~$73/cluster/month. Free tier has no SLA guarantee on control plane. | No SLA on API server uptime. For a demo/dev cluster, acceptable; for prod workloads, should be enabled. |
+| `CKV_AZURE_226` | AKS ephemeral OS disks | Requires the VM SKU to have enough local SSD (cache disk) to hold the OS image. Not guaranteed for all D-series sizes. | Managed OS disks used instead — slightly higher I/O latency and cost per node. No security impact. |
+
+---
+
+#### Fix for tfsec SARIF path error
+
+**Error:** `Path does not exist: tfsec-results.sarif`
+
+**Root cause:** The `aquasecurity/tfsec-action` writes the SARIF output file relative to its `working_directory` parameter (`infrastructure/terraform`), not the workspace root. The `upload-sarif` step was looking for the file at workspace root.
+
+**Fix:** Updated the upload step in `.github/workflows/terraform-dev.yml`:
+```yaml
+# Before (wrong — looks in workspace root)
+sarif_file: tfsec-results.sarif
+
+# After (correct — matches where tfsec-action wrote the file)
+sarif_file: infrastructure/terraform/tfsec-results.sarif
+```
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs

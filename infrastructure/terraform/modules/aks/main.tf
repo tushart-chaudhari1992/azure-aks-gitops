@@ -11,6 +11,14 @@ resource "azurerm_kubernetes_cluster" "main" {
   private_cluster_enabled = true
   private_dns_zone_id     = "System" # Azure manages the private DNS zone
 
+  # Disables the local admin kubeconfig entirely — forces all access through Azure AD RBAC.
+  # Without this, anyone with the kubeconfig file has cluster-admin regardless of AAD policies.
+  local_account_disabled = true
+
+  # Patch and minor version updates are applied automatically on the "stable" cadence.
+  # Prevents clusters falling behind on CVE patches without requiring manual intervention.
+  automatic_channel_upgrade = "stable"
+
   # System node pool — runs cluster-critical components only, not application workloads
   default_node_pool {
     name                         = "system"
@@ -20,6 +28,7 @@ resource "azurerm_kubernetes_cluster" "main" {
     os_disk_size_gb              = 50
     type                         = "VirtualMachineScaleSets"
     only_critical_addons_enabled = true
+    max_pods                     = 110
   }
 
   # Control plane identity — used by AKS to manage Azure resources (load balancers, etc.)
@@ -47,6 +56,15 @@ resource "azurerm_kubernetes_cluster" "main" {
     azure_rbac_enabled = true
   }
 
+  # Enforces Azure Policy definitions against cluster workloads (pod security, resource limits, etc.)
+  azure_policy_enabled = true
+
+  # Mounts Key Vault secrets as files/env vars in pods; rotation means pods always see current values
+  # without redeployment. Required for zero-downtime secret rotation.
+  key_vault_secrets_provider {
+    secret_rotation_enabled = true
+  }
+
   oms_agent {
     log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
   }
@@ -69,6 +87,7 @@ resource "azurerm_kubernetes_cluster_node_pool" "user" {
   node_count            = var.user_node_count
   vnet_subnet_id        = var.aks_subnet_id
   os_disk_size_gb       = 100
+  max_pods              = 110
   tags                  = var.tags
 }
 
