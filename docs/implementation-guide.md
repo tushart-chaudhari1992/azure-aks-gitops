@@ -705,6 +705,46 @@ az ad app federated-credential create --id 565da2b4-54d4-423c-893d-bcc454a09383 
 
 ---
 
+### Fix 5 — terraform fmt -check fails in CI (exit code 3)
+
+**Error (in GitHub Actions validate job):**
+```
+Error: Terraform exited with code 3.
+Error: Process completed with exit code 1.
+```
+
+**Root cause:** `terraform fmt -check` exits with a non-zero code when any `.tf` or `.tfvars` file is not canonically formatted. Exit code 3 on Windows (vs 1 on Linux) is how PowerShell and Git Bash report the same error differently — but the effect is identical: the pipeline fails.
+
+The 5 files that were not formatted:
+- `environments/dev/main.tf`
+- `environments/dev/terraform.tfvars`
+- `environments/prod/main.tf`
+- `modules/aks/main.tf`
+- `modules/networking/main.tf`
+
+Common formatting issues caught by `terraform fmt`:
+- Inline comment spacing (two spaces before `#`)
+- Argument alignment (extra spaces to align `=` signs across attributes)
+- Indentation (must be 2 spaces, not tabs)
+
+**Fix:** Run `terraform fmt` locally before every commit to auto-fix all files:
+```bash
+# Fix all files recursively from the terraform root
+terraform fmt -recursive infrastructure/terraform/
+
+# Verify — no output and exit code 0 means all files are clean
+terraform fmt -check -recursive infrastructure/terraform/
+```
+
+**Prevention:** Add this to your local git pre-commit hook or always run fmt before pushing:
+```bash
+# One-liner to add as a pre-commit hook
+echo '#!/bin/sh\nterraform fmt -check -recursive infrastructure/terraform/ || { echo "Run: terraform fmt -recursive infrastructure/terraform/"; exit 1; }' > .git/hooks/pre-commit
+chmod +x .git/hooks/pre-commit
+```
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
