@@ -1113,6 +1113,38 @@ Keeping them separate follows least-privilege — a compromised node cannot use 
 
 ---
 
+### Fix 12 — `CustomKubeletIdentityMissingPermissionError` on AKS cluster creation
+
+**Error (during terraform apply):**
+```
+400 Bad Request — CustomKubeletIdentityMissingPermissionError
+The cluster using user-assigned managed identity must be granted
+'Managed Identity Operator' role to assign kubelet identity.
+```
+
+**Root cause:** When AKS uses a UserAssigned control plane identity with a separate kubelet identity (Fix 11d), Azure requires the control plane identity to have the `Managed Identity Operator` role on the kubelet identity resource. Without it, the AKS control plane cannot assign the kubelet identity to nodes at provisioning time.
+
+This is an Azure platform requirement — it applies any time you separate the control plane and kubelet identities.
+
+**Fix:** Added a role assignment in `modules/aks/main.tf`:
+
+```hcl
+resource "azurerm_role_assignment" "control_plane_kubelet_operator" {
+  principal_id                     = azurerm_user_assigned_identity.control_plane.principal_id
+  role_definition_name             = "Managed Identity Operator"
+  scope                            = azurerm_user_assigned_identity.kubelet.id
+  skip_service_principal_aad_check = true
+}
+```
+
+Also added `depends_on = [azurerm_role_assignment.control_plane_kubelet_operator]` to the `azurerm_kubernetes_cluster` resource. Azure AD role assignment propagation takes up to 2 minutes — without `depends_on`, Terraform submits the cluster creation API call immediately after the role assignment API returns, before the permission has actually propagated, and the cluster creation races and fails with the same 400 error.
+
+**Why `skip_service_principal_aad_check = true`:** The principal is a managed identity (not a service principal backed by an app registration). This flag skips an AAD lookup that would otherwise fail for managed identities.
+
+**Impact of not fixing:** AKS cluster creation always fails with 400. No cluster, no node pools, no workloads.
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs

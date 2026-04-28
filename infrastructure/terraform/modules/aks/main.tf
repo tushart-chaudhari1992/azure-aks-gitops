@@ -74,6 +74,10 @@ resource "azurerm_kubernetes_cluster" "main" {
   }
 
   tags = var.tags
+
+  # Role assignment propagation in Azure AD takes up to 2 minutes. Without this
+  # dependency the cluster API call races the propagation and fails with 400.
+  depends_on = [azurerm_role_assignment.control_plane_kubelet_operator]
 }
 
 resource "azurerm_user_assigned_identity" "control_plane" {
@@ -86,6 +90,16 @@ resource "azurerm_user_assigned_identity" "kubelet" {
   name                = "${var.prefix}-kubelet-identity"
   location            = var.location
   resource_group_name = var.resource_group_name
+}
+
+# AKS requires the control plane identity to have Managed Identity Operator on the kubelet
+# identity so it can assign that identity to each node at provisioning time.
+# Without this, cluster creation fails with CustomKubeletIdentityMissingPermissionError.
+resource "azurerm_role_assignment" "control_plane_kubelet_operator" {
+  principal_id                     = azurerm_user_assigned_identity.control_plane.principal_id
+  role_definition_name             = "Managed Identity Operator"
+  scope                            = azurerm_user_assigned_identity.kubelet.id
+  skip_service_principal_aad_check = true
 }
 
 # User node pool — runs application workloads, separate from system pool
