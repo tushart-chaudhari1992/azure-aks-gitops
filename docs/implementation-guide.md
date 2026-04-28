@@ -278,11 +278,13 @@ Expected: ~20 lines of `created` output (CRDs, deployments, services, RBAC).
 
 **Why:** By default ArgoCD server handles its own TLS. In this setup TLS is terminated at the Load Balancer / ingress layer. Running ArgoCD in `--insecure` mode prevents a double-TLS situation where the LB strips TLS and then ArgoCD rejects the plain HTTP connection from the LB. Without this patch the ArgoCD UI returns a redirect loop.
 
+**Why strategic merge patch, not JSON patch:** ArgoCD v2.11's `argocd-server` container has no `args` field in the install manifest — it runs via `tini` (the Docker ENTRYPOINT) which executes the Docker CMD (`argocd-server`) as the process. A JSON patch `op:add` to `args/-` on a non-existent array creates `args: ["--insecure"]`, replacing the Docker CMD entirely. `tini` then tries to exec `--insecure` as a binary and fails: `[FATAL tini] exec --insecure failed: No such file or directory`. The strategic merge patch sets the full args array including the binary name so `tini` receives `argocd-server --insecure`.
+
 ```bash
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
-  --command "kubectl patch deployment argocd-server -n argocd --type=json -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args\",\"value\":[\"--insecure\"]}]'"
+  --command "kubectl patch deployment argocd-server -n argocd --type=strategic -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"argocd-server\",\"args\":[\"argocd-server\",\"--insecure\"]}]}}}}'"
 ```
 
 Expected: `deployment.apps/argocd-server patched`
@@ -1412,6 +1414,49 @@ Role assignment ID created: `059435c4-4db7-4043-a0fc-64132c487813`
 - `Azure Kubernetes Service RBAC Admin` = namespace-scoped admin, not sufficient for cluster-level operations like listing nodes
 
 **This is a one-time manual step** — personal user access to the cluster should not be in Terraform state. Any new team member or CI runner that needs kubectl access requires their own role assignment at the appropriate scope.
+
+---
+
+### Fix 18 — ArgoCD server crash: `[FATAL tini] exec --insecure failed: No such file or directory`
+
+**Error (in ArgoCD server pod logs after patching):**
+```
+[FATAL tini (8)] exec --insecure failed: No such file or directory
+```
+
+**Root cause:** ArgoCD v2.11.0's `argocd-server` container has no `args` field in the upstream install manifest. The container relies on the Docker image's `CMD ["argocd-server"]` with `tini` as the `ENTRYPOINT` (`/usr/bin/tini --`).
+
+When a JSON patch uses `op: add` on path `/spec/template/spec/containers/0/args/-` and the `args` array does not yet exist, kubectl creates a brand-new `args` array containing only the value — in this case `["--insecure"]`. In Kubernetes, `args` overrides the Docker `CMD` entirely. The resulting container execution becomes:
+
+```
+tini -- --insecure        ← tini tries to exec "--insecure" as a binary
+```
+
+`tini` cannot find a program named `--insecure` → fatal crash. The same bug affects any JSON patch that appends to a non-existent array: the append creates a new array with only the new element, discarding what the image would have provided as CMD.
+
+**Fix — use strategic merge patch with the full args array:**
+
+Strategic merge patch sets the `args` field explicitly, including the binary name that `tini` needs to exec:
+
+```bash
+az aks command invoke \
+  --resource-group boutique-dev-rg \
+  --name boutique-dev-aks \
+  --command "kubectl patch deployment argocd-server -n argocd --type=strategic -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"argocd-server\",\"args\":[\"argocd-server\",\"--insecure\"]}]}}}}'"
+```
+
+Effective container execution after the fix:
+```
+tini -- argocd-server --insecure     ← tini execs argocd-server with the flag
+```
+
+**Also fixed:** `gitops/argocd/install/kustomization.yaml` — the Kustomize patch was changed from a JSON patch (`op: add, path: args/-`) to a strategic merge patch that sets `args: ["argocd-server", "--insecure"]`. This ensures the kustomization is correct for future reference even though we apply ArgoCD via direct HTTPS manifest in this playbook.
+
+**General rule:** When patching a Kubernetes container that has no `args` field, always use a strategic merge patch that sets the complete `args` value — never rely on JSON `op: add` to `args/-` to append to a non-existent array.
+
+**Files changed:**
+- `gitops/argocd/install/kustomization.yaml` — changed from JSON patch to strategic merge patch
+- `docs/implementation-guide.md` — Phase 7 Step 3 updated with correct patch command and explanation
 
 ---
 
