@@ -53,7 +53,10 @@ resource "azurerm_kubernetes_cluster" "main" {
   }
 
   # Azure AD RBAC — authenticate to the cluster with Azure identities, not static kubeconfig
+  # managed = true activates AKS-managed Entra integration (required in azurerm ~3.x).
+  # In azurerm v4.0 this field is removed and always defaults to true.
   azure_active_directory_role_based_access_control {
+    managed            = true
     azure_rbac_enabled = true
   }
 
