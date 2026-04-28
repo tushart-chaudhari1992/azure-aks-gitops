@@ -1736,6 +1736,66 @@ UAIs created → Role assignment created → 90s sleep → Cluster created
 
 ---
 
+### Fix 24 — `terraform import` fails: `ControlPlaneNotFound` after partially failed cluster creation
+
+**Error (during `terraform import` of AKS cluster):**
+```
+Error: retrieving User Credentials for Kubernetes Cluster
+  Code: "ControlPlaneNotFound"
+  Message: "Could not find control plane with ID 69f0525af97e8e00013ad2ea.
+  Please reconcile your managed cluster by cmd 'az aks update' and try again."
+```
+
+**Root cause:** The previous apply (which failed with the MSI certificate error, Fix 23) left the AKS cluster in a partially provisioned state. The ARM resource object was registered in Azure (so `az aks show` would return it), but the Kubernetes control plane was never fully initialised. Terraform's import reads cluster credentials as part of refreshing state — this call hit the un-initialised control plane and got a 404.
+
+This is a two-layer failure:
+1. AKS cluster ARM object exists → `terraform import` finds it
+2. AKS control plane not initialised → credential read during import fails
+
+**Recovery steps (in order):**
+
+**Step 1 — Run `terraform init -upgrade` to resolve new provider lock file error:**
+```powershell
+terraform init -upgrade
+```
+The `hashicorp/time` provider added in Fix 23 was not in the lock file. Without this step, all Terraform commands (including import) fail with "Inconsistent dependency lock file".
+
+**Step 2 — Reconcile the control plane via Azure CLI:**
+```powershell
+az aks update --resource-group boutique-dev-rg --name boutique-dev-aks
+```
+This triggers Azure to reconcile the cluster — it attempts to bring the control plane to a healthy state. Wait for the command to complete (~5 minutes).
+
+**Step 3 — Retry the import:**
+```powershell
+terraform import `
+  module.aks.azurerm_kubernetes_cluster.main `
+  /subscriptions/3a2f7662-4ee2-4762-ab05-988439cdb9c4/resourceGroups/boutique-dev-rg/providers/Microsoft.ContainerService/managedClusters/boutique-dev-aks
+```
+
+**Step 4 — Run plan and apply to reconcile any drift:**
+```powershell
+terraform plan
+terraform apply
+```
+
+**If Step 2 fails (reconcile cannot recover the cluster):**
+Delete the broken cluster and let Terraform recreate it cleanly:
+```powershell
+az aks delete --resource-group boutique-dev-rg --name boutique-dev-aks --yes
+# Wait ~3 min for deletion, then:
+terraform apply   # time_sleep (Fix 23) prevents the MSI race this time
+```
+
+**Why this happens specifically on destroy+recreate:** The `private_cluster_enabled` change (Fix 21) forced a destroy+recreate of the cluster. The MSI race (Fix 23) caused the creation to fail mid-way. On a fresh cluster apply from scratch this sequence is less likely, but not impossible on subscriptions with slow MSI propagation.
+
+**Prevention:** The `time_sleep` in Fix 23 prevents the MSI certificate race that caused the original creation failure. With that fix in place, the apply should complete cleanly without leaving a partially provisioned cluster.
+
+**Files changed:**
+- `infrastructure/terraform/environments/dev/.terraform.lock.hcl` — added `hashicorp/time` provider hash
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
