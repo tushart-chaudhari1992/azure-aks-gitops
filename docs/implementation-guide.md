@@ -1166,16 +1166,27 @@ Command to check current supported versions at any time:
 az aks get-versions --location eastus --query "values[].version" -o tsv
 ```
 
-**Fix:** Updated the default in `modules/aks/variables.tf`:
-```hcl
-# Before
-default = "1.29"
+**Fix:** Updated the default in `modules/aks/variables.tf` twice:
 
-# After
-default = "1.32"
-```
+| Attempt | Version | Outcome |
+|---|---|---|
+| Fix 13 | 1.32 | Failed — 1.32 is LTS-only, requires Premium tier |
+| Fix 13 (final) | 1.34 | Succeeds — `KubernetesOfficial` plan supported |
 
-Version 1.32 was chosen as a stable mid-range option — not the oldest (1.30, close to end of support) nor the newest (1.35, may have rough edges). The `automatic_channel_upgrade = "stable"` setting already in the AKS module will advance the cluster forward automatically as new versions are certified on the stable channel.
+As of 2026-04-28, versions available for standard (non-LTS) clusters in eastus:
+
+| Version | Support plans |
+|---|---|
+| 1.35 | KubernetesOfficial, AKSLongTermSupport |
+| 1.34 | KubernetesOfficial, AKSLongTermSupport |
+| 1.33 | KubernetesOfficial, AKSLongTermSupport |
+| 1.32 | AKSLongTermSupport only |
+| 1.31 | AKSLongTermSupport only |
+| 1.30 | AKSLongTermSupport only |
+
+Versions 1.30–1.32 are LTS-only — they require `sku_tier = "Premium"` and an explicit LTS support plan. Standard-tier clusters must use 1.33 or newer.
+
+Version 1.34 was chosen: stable, not the newest (1.35), with room for `automatic_channel_upgrade = "stable"` to advance it.
 
 **Impact of not fixing:** Cluster creation always fails with 400. This is a hard block — there is no fallback or retry.
 
