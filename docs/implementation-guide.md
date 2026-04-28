@@ -1688,6 +1688,54 @@ When `private_cluster_enabled = true` (prod), Azure ignores `api_server_authoriz
 
 ---
 
+### Fix 23 — AKS cluster creation fails: `Reconcile managed identity credential failed — length of returned certificate: 0`
+
+**Error (during terraform apply — AKS cluster creation):**
+```
+Status: "NotFound"
+Message: "Reconcile managed identity credential failed. Details:
+  unexpected response from MSI data plane, length of returned certificate: 0."
+```
+
+**Root cause:** Azure's MSI (Managed Service Identity) data plane takes 60–120 seconds to issue TLS certificates for newly created User Assigned Managed Identities. When Terraform destroys and recreates the identities (as happens when changing `private_cluster_enabled`), the AKS cluster creation API call races the MSI data plane — it tries to authenticate using identities whose certificates haven't been issued yet, getting a zero-length response.
+
+The existing `depends_on = [azurerm_role_assignment.control_plane_kubelet_operator]` only waits for the Azure Resource Manager API to confirm the role assignment. It does not wait for the MSI data plane to catch up — these are separate Azure services with independent propagation timelines.
+
+**Fix — add `time_sleep` to absorb MSI propagation lag:**
+
+```hcl
+resource "time_sleep" "wait_for_msi" {
+  depends_on      = [azurerm_role_assignment.control_plane_kubelet_operator]
+  create_duration = "90s"
+}
+```
+
+The cluster's `depends_on` is updated to point at the sleep instead of the role assignment directly:
+
+```hcl
+depends_on = [time_sleep.wait_for_msi]
+```
+
+The dependency chain becomes:
+```
+UAIs created → Role assignment created → 90s sleep → Cluster created
+```
+
+90 seconds covers both Azure AD role propagation (~2 min worst case, but usually faster) and MSI certificate issuance (~60–90s).
+
+**Why not just retry?** A retry works for a one-off failure, but without the sleep every fresh environment provisioning (new subscription, destroy+apply) will hit this race. The sleep makes the pipeline deterministic.
+
+**Provider added:** `hashicorp/time ~> 0.11` — added to `required_providers` in both `environments/dev/main.tf` and `environments/prod/main.tf`. The `time` provider has no configuration and requires no credentials.
+
+**Immediate recovery:** If you hit this error, just re-run the apply. The identities already exist and MSI will have issued certificates by the time the retry runs.
+
+**Files changed:**
+- `modules/aks/main.tf` — added `time_sleep.wait_for_msi`, updated cluster `depends_on`
+- `environments/dev/main.tf` — added `hashicorp/time` provider
+- `environments/prod/main.tf` — added `hashicorp/time` provider
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
