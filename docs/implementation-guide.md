@@ -301,7 +301,7 @@ EOF
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
-  --file ~/fix-argocd.sh \
+  --file scripts/fix-argocd.sh \
   --command "bash fix-argocd.sh"
 ```
 
@@ -1574,7 +1574,7 @@ EOF
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
-  --file ~/fix-argocd.sh \
+  --file scripts/fix-argocd.sh \
   --command "bash fix-argocd.sh"
 ```
 
