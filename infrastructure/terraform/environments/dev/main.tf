@@ -42,14 +42,15 @@ module "networking" {
 }
 
 module "aks" {
-  source              = "../../modules/aks"
-  prefix              = var.prefix
-  location            = var.location
-  resource_group_name = azurerm_resource_group.main.name
-  aks_subnet_id       = module.networking.aks_subnet_id
-  user_node_vm_size   = "Standard_D2s_v3"
-  user_node_count     = 1
-  tags                = local.tags
+  source                          = "../../modules/aks"
+  prefix                          = var.prefix
+  location                        = var.location
+  resource_group_name             = azurerm_resource_group.main.name
+  aks_subnet_id                   = module.networking.aks_subnet_id
+  user_node_vm_size               = "Standard_D2s_v3"
+  user_node_count                 = 1
+  api_server_authorized_ip_ranges = var.api_server_authorized_ip_ranges
+  tags                            = local.tags
 }
 
 module "acr" {

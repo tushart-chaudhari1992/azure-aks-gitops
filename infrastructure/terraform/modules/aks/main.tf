@@ -5,11 +5,12 @@ resource "azurerm_kubernetes_cluster" "main" {
   dns_prefix          = var.prefix
   kubernetes_version  = var.kubernetes_version
 
-  # Private cluster — API server has no public endpoint at all.
-  # kubectl access requires being inside the VNet (jump box, VPN, or CI runner in VNet).
-  # Trade-off: harder to access for developers, much smaller attack surface.
-  private_cluster_enabled = true
-  private_dns_zone_id     = "System" # Azure manages the private DNS zone
+  # Public API server endpoint restricted to an explicit IP allowlist.
+  # kubectl works directly from any machine whose IP is in api_server_authorized_ip_ranges.
+  # Trade-off: slightly larger attack surface than a fully private cluster, but the allowlist
+  # keeps it locked to known IPs — acceptable for dev, not recommended for prod.
+  private_cluster_enabled       = false
+  api_server_authorized_ip_ranges = var.api_server_authorized_ip_ranges
 
   # Disables the local admin kubeconfig entirely — forces all access through Azure AD RBAC.
   # Without this, anyone with the kubeconfig file has cluster-admin regardless of AAD policies.
