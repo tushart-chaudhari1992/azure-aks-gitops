@@ -49,6 +49,7 @@ azure-aks-gitops/
 
 - Never include `Co-Authored-By: Claude` or any Claude/AI attribution in commit messages
 - Use only the subject line and body describing what changed and why — no trailers
+- When syncing with remote, always use `git pull` / `git merge` — never `git rebase`
 
 ## Key Conventions
 
