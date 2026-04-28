@@ -209,28 +209,54 @@ terraform output
 
 ## Phase 6 — Post-Apply: Cluster Access
 
-### ⚠️ Private cluster note
+### After every `terraform apply` that creates or recreates the cluster
 
-`private_cluster_enabled = true` means the AKS API server has no public endpoint. `kubectl` commands fail from outside the VNet. For dev, use `az aks command invoke` to run commands through the Azure API without VNet access.
+Run these steps in order every time the AKS cluster is freshly created or recreated (e.g. after `terraform destroy` + `terraform apply`, or after changing `private_cluster_enabled`).
 
-```bash
-# Get credentials (merges into ~/.kube/config but kubectl will timeout outside VNet)
-az aks get-credentials \
-  --resource-group boutique-dev-rg \
-  --name boutique-dev-aks
-
-# Use this instead of direct kubectl for dev:
-az aks command invoke \
-  --resource-group boutique-dev-rg \
-  --name boutique-dev-aks \
-  --command "kubectl get nodes"
-
-# Alias shortcut (add to ~/.bashrc):
-alias kaks='az aks command invoke --resource-group boutique-dev-rg --name boutique-dev-aks --command'
-kaks "kubectl get pods -A"
+**Step 1 — Get credentials:**
+```powershell
+az aks get-credentials --resource-group boutique-dev-rg --name boutique-dev-aks --overwrite-existing
 ```
 
-For production or persistent access: deploy a jump box VM in the VNet and SSH-tunnel through it.
+**Step 2 — Grant yourself cluster admin access:**
+
+This role assignment is scoped to the cluster resource. When the cluster is destroyed and recreated, the assignment is deleted with it — it must be recreated manually every time.
+
+```powershell
+$scope = "/subscriptions/3a2f7662-4ee2-4762-ab05-988439cdb9c4/resourceGroups/boutique-dev-rg/providers/Microsoft.ContainerService/managedClusters/boutique-dev-aks"
+az role assignment create `
+  --assignee "968ca43e-a6c5-4f87-945c-5f5fd3d95a53" `
+  --role "Azure Kubernetes Service RBAC Cluster Admin" `
+  --scope $scope
+```
+
+**Why this is not in Terraform:** Personal developer access to a cluster should not be managed by CI pipelines. Terraform state is shared — putting your personal Object ID in Terraform means anyone running `terraform destroy` removes your access. Manual role assignments keep personal access out of the automation layer.
+
+**Step 3 — Verify kubectl works:**
+```powershell
+kubectl get nodes
+```
+
+Expected: both `system` and `user` node pools showing `Ready`.
+
+**Step 4 — Bootstrap ArgoCD (first time only, or after cluster recreate):**
+```powershell
+.\scripts\bootstrap-argocd.ps1
+```
+
+This script is idempotent — safe to re-run. It installs ArgoCD, configures insecure mode, starts port-forward, applies the Application manifest, and prints the admin password.
+
+ArgoCD UI: `http://localhost:8080` (keep the port-forward window open)
+
+---
+
+### Adding a new team member
+
+For any new developer who needs kubectl access, run Step 2 with their Azure AD Object ID:
+```powershell
+az ad user show --id their-email@domain.com --query id -o tsv
+# Use the returned Object ID as --assignee in the role assignment command
+```
 
 ---
 
