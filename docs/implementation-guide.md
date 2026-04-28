@@ -236,33 +236,77 @@ For production or persistent access: deploy a jump box VM in the VNet and SSH-tu
 
 ## Phase 7 — ArgoCD Bootstrap
 
-Run all `kubectl` commands via `az aks command invoke` (see Phase 6).
+> **Why `az aks command invoke`?** The AKS cluster has `private_cluster_enabled = true` — the Kubernetes API server has no public endpoint. `kubectl` from your laptop will time out. `az aks command invoke` tunnels commands through the Azure API plane, which has internal VNet access to the private API server. No VPN or jump box needed for dev.
 
-### Install ArgoCD
+Run every `kubectl` command below via `az aks command invoke`.
 
-> **Note — `az aks command invoke` has no git binary.** `kubectl apply -k` with a remote URL fails because kustomize needs git to clone the reference. Apply the upstream manifest directly via HTTPS instead (kubectl fetches HTTP URLs natively), then patch the deployment separately.
+---
+
+### Step 1 — Verify nodes are healthy
+
+**Why:** Confirm both node pools (system and user) are `Ready` before installing anything. Installing ArgoCD on a node that is still initialising causes pod scheduling failures.
 
 ```bash
-# Step 1 — create namespace and install official ArgoCD manifest
+az aks command invoke \
+  --resource-group boutique-dev-rg \
+  --name boutique-dev-aks \
+  --command "kubectl get nodes"
+```
+
+Expected output: 2 nodes, both `STATUS = Ready`.
+
+---
+
+### Step 2 — Create namespace and install ArgoCD
+
+**Why the namespace first:** ArgoCD's install manifest assumes the `argocd` namespace already exists. Creating it first prevents race conditions where some resources fail because the namespace isn't ready yet.
+
+**Why not `kubectl apply -k`:** `az aks command invoke` runs in a minimal container with no `git` binary. `kubectl apply -k` with a remote URL uses kustomize which calls git to clone the reference — it fails with "no git on path". Applying the upstream manifest directly via HTTPS works because kubectl fetches HTTP URLs natively without git.
+
+```bash
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
   --command "kubectl create namespace argocd && kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.11.0/manifests/install.yaml"
+```
 
-# Step 2 — patch argocd-server to run in insecure mode (TLS terminated at LB/ingress)
+Expected: ~20 lines of `created` output (CRDs, deployments, services, RBAC).
+
+---
+
+### Step 3 — Patch ArgoCD server to insecure mode
+
+**Why:** By default ArgoCD server handles its own TLS. In this setup TLS is terminated at the Load Balancer / ingress layer. Running ArgoCD in `--insecure` mode prevents a double-TLS situation where the LB strips TLS and then ArgoCD rejects the plain HTTP connection from the LB. Without this patch the ArgoCD UI returns a redirect loop.
+
+```bash
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
   --command "kubectl patch deployment argocd-server -n argocd --type=json -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args\",\"value\":[\"--insecure\"]}]'"
+```
 
-# Step 3 — wait for server to be ready
+Expected: `deployment.apps/argocd-server patched`
+
+---
+
+### Step 4 — Wait for ArgoCD server to be ready
+
+**Why:** The patch in Step 3 triggers a pod rollout. The next steps (get password, apply apps) require the server to be fully up. `rollout status` blocks until the new pod is Running and passes its readiness probe — safer than guessing with a sleep.
+
+```bash
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
   --command "kubectl rollout status deployment/argocd-server -n argocd --timeout=3m"
 ```
 
-### Get ArgoCD admin password
+Expected: `deployment "argocd-server" successfully rolled out`
+
+---
+
+### Step 5 — Get ArgoCD admin password
+
+**Why:** ArgoCD generates a random initial admin password and stores it as a base64-encoded Kubernetes secret. You need it to log in to the UI. The `base64 -d` decodes it to plain text.
 
 ```bash
 az aks command invoke \
@@ -271,7 +315,13 @@ az aks command invoke \
   --command "kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath='{.data.password}' | base64 -d"
 ```
 
-### Apply ArgoCD Application manifests
+Save this password — username is always `admin`.
+
+---
+
+### Step 6 — Apply ArgoCD Application manifests
+
+**Why:** The ArgoCD `Application` CRD tells ArgoCD which Git repo path to watch and which cluster/namespace to sync to. Without this, ArgoCD is running but has no apps to manage. Applying this manifest is what starts the GitOps loop.
 
 ```bash
 az aks command invoke \
@@ -280,27 +330,29 @@ az aks command invoke \
   --command "kubectl apply -f https://raw.githubusercontent.com/tushart-chaudhari1992/azure-aks-gitops/main/gitops/argocd/apps/boutique-dev.yaml"
 ```
 
-ArgoCD will immediately start syncing `kubernetes/overlays/dev` from Git.
+ArgoCD will immediately start syncing `kubernetes/overlays/dev` from Git and creating the Boutique pods.
 
-### Access the ArgoCD UI
+---
 
-Use a local port-forward via a jump box, or temporarily expose via a LoadBalancer (dev only):
+### Step 7 — Expose ArgoCD UI (dev only)
+
+**Why:** The ArgoCD server service is `ClusterIP` by default — only reachable inside the cluster. For dev, patching it to `LoadBalancer` gets Azure to assign a public IP so you can open the UI in a browser. **Do not do this in production** — use a private ingress or port-forward through a jump box instead.
 
 ```bash
-# Dev shortcut — exposes ArgoCD UI publicly (NOT for production)
+# Patch service type to LoadBalancer
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
   --command "kubectl patch svc argocd-server -n argocd -p '{\"spec\":{\"type\":\"LoadBalancer\"}}'"
 
-# Get the external IP (takes ~60s to assign)
+# Get the external IP (takes ~60s for Azure to assign)
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
   --command "kubectl get svc argocd-server -n argocd"
-# Open https://<EXTERNAL-IP> in browser
-# Login: admin / <password from above>
 ```
+
+Open `http://<EXTERNAL-IP>` in a browser. Login: `admin` / `<password from Step 5>`.
 
 ---
 
