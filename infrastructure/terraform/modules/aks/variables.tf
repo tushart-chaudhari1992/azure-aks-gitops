@@ -5,7 +5,7 @@ variable "aks_subnet_id" { type = string }
 
 variable "kubernetes_version" {
   type    = string
-  default = "1.29"
+  default = "1.32"
 }
 
 variable "user_node_vm_size" {
