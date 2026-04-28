@@ -960,6 +960,50 @@ Path does not exist: infrastructure/terraform/tfsec-results.sarif
 
 ---
 
+### Fix 10 — AADSTS700213: missing federated credential for `environment:dev` subject
+
+**Error (in GitHub Actions apply job):**
+```
+AADSTS700213: No matching federated identity record found for presented assertion subject
+'repo:tushart-chaudhari1992/azure-aks-gitops:environment:dev'
+```
+
+**Root cause:** When a GitHub Actions job declares `environment: dev`, Azure AD receives an OIDC token whose `sub` claim changes from `ref:refs/heads/main` to `environment:dev`. Each distinct subject requires its own federated identity credential on the App Registration — they are matched by exact string.
+
+We had credentials for `ref:refs/heads/main` and `pull_request`, but not for `environment:dev`.
+
+**Fix:** Create a third federated identity credential:
+
+```powershell
+$az = "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd"
+$appId = "565da2b4-54d4-423c-893d-bcc454a09383"
+$json = @'
+{
+  "name": "github-env-dev",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:tushart-chaudhari1992/azure-aks-gitops:environment:dev",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+'@
+$tmpFile = "$env:TEMP\fic-env-dev.json"
+$json | Out-File -FilePath $tmpFile -Encoding utf8
+& $az ad app federated-credential create --id $appId --parameters "@$tmpFile"
+```
+
+**All three credentials now in place:**
+
+| Name | Subject | Used by |
+|---|---|---|
+| `github-main` | `repo:…:ref:refs/heads/main` | validate, plan jobs on push to main |
+| `github-pr` | `repo:…:pull_request` | validate, plan jobs on PRs |
+| `github-env-dev` | `repo:…:environment:dev` | apply job (has `environment: dev` declared) |
+
+**Rule:** Every job that declares `environment: <name>` in the workflow needs its own federated credential with subject `repo:<owner>/<repo>:environment:<name>`. If a `prod` environment is added later, a fourth credential with subject `…:environment:prod` must be created before the apply job for prod will authenticate.
+
+**Note on PowerShell JSON quoting:** Passing JSON inline via `--parameters '{"key":"val"}'` fails in PowerShell because it strips the inner double quotes. Always write the JSON to a temp file and pass `--parameters "@/path/to/file.json"`.
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
