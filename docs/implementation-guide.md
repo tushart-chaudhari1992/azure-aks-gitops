@@ -1323,6 +1323,43 @@ default_node_pool {
 
 ---
 
+### Fix 17 — Forbidden: user cannot list nodes — missing AKS RBAC role
+
+**Error (running `az aks command invoke` or `kubectl get nodes`):**
+```
+Error from server (Forbidden): nodes is forbidden: User "968ca43e-..." cannot list resource
+"nodes" in API group "" at the cluster scope: User does not have access to the resource in
+Azure. Update role assignment to allow access.
+```
+
+**Root cause:** The cluster has two hardened settings that together enforce Azure RBAC for all kubectl access:
+- `local_account_disabled = true` — the static admin kubeconfig is disabled, no backdoor access
+- `azure_rbac_enabled = true` — all kubectl operations are authorised against Azure RBAC, not Kubernetes RBAC
+
+A brand-new cluster has no role assignments on it. Even the subscription Owner who created it must be explicitly granted an AKS RBAC role before kubectl works.
+
+**Fix:** Grant `Azure Kubernetes Service RBAC Cluster Admin` to the user account scoped to the AKS cluster resource:
+
+```powershell
+$az = "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd"
+$scope = "/subscriptions/3a2f7662-4ee2-4762-ab05-988439cdb9c4/resourceGroups/boutique-dev-rg/providers/Microsoft.ContainerService/managedClusters/boutique-dev-aks"
+& $az role assignment create `
+  --assignee "968ca43e-a6c5-4f87-945c-5f5fd3d95a53" `
+  --role "Azure Kubernetes Service RBAC Cluster Admin" `
+  --scope $scope
+```
+
+Role assignment ID created: `059435c4-4db7-4043-a0fc-64132c487813`
+
+**Why this role specifically:**
+- `Azure Kubernetes Service RBAC Cluster Admin` = full cluster-admin inside Kubernetes, controlled via Azure RBAC
+- `Azure Kubernetes Service Cluster Admin Role` (different role) = only grants access to download the admin kubeconfig — not useful when local accounts are disabled
+- `Azure Kubernetes Service RBAC Admin` = namespace-scoped admin, not sufficient for cluster-level operations like listing nodes
+
+**This is a one-time manual step** — personal user access to the cluster should not be in Terraform state. Any new team member or CI runner that needs kubectl access requires their own role assignment at the appropriate scope.
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
