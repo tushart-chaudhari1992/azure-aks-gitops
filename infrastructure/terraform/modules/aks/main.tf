@@ -15,6 +15,10 @@ resource "azurerm_kubernetes_cluster" "main" {
   # Without this, anyone with the kubeconfig file has cluster-admin regardless of AAD policies.
   local_account_disabled = true
 
+  # One-way switch — once enabled Azure will never allow disabling it.
+  # Required for workload identity federation (pods authenticating to Azure AD without secrets).
+  oidc_issuer_enabled = true
+
   # Patch and minor version updates are applied automatically on the "stable" cadence.
   # Prevents clusters falling behind on CVE patches without requiring manual intervention.
   automatic_channel_upgrade = "stable"

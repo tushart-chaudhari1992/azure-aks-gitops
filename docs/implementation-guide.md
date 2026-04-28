@@ -1261,6 +1261,34 @@ Subnet /24 provides 250 usable IPs → exhausted
 
 ---
 
+### Fix 15 — `OIDCIssuerFeatureCannotBeDisabled` on AKS cluster update
+
+**Error (during terraform apply — cluster update):**
+```
+400 OIDCIssuerFeatureCannotBeDisabled
+OIDC issuer feature cannot be disabled.
+```
+
+**Root cause:** A previous apply run partially succeeded and created the AKS cluster with `oidc_issuer_enabled = true` (Azure enables it automatically in some configurations). OIDC issuer is a **one-way switch** in Azure — once enabled it can never be disabled on that cluster.
+
+Terraform's default for `oidc_issuer_enabled` is `false`. On the next apply, Terraform computed a diff (`false` → current state `true`) and tried to reconcile by disabling it, which Azure rejected.
+
+**Fix:** Explicitly set `oidc_issuer_enabled = true` in `modules/aks/main.tf` so Terraform's desired state matches what Azure has deployed — no diff, no update attempted:
+
+```hcl
+# One-way switch — once enabled Azure will never allow disabling it.
+# Required for workload identity federation (pods authenticating to Azure AD without secrets).
+oidc_issuer_enabled = true
+```
+
+**Why keep it enabled (beyond just fixing the error):** OIDC issuer is the prerequisite for AKS Workload Identity — the modern way for pods to authenticate to Azure services (Key Vault, Storage, etc.) without storing credentials. With OIDC issuer enabled, pods can exchange a Kubernetes service account token for an Azure AD token using federated identity credentials, eliminating the need for secrets or managed identity bindings at the pod level.
+
+**Impact of not fixing:** Every subsequent `terraform apply` fails with 400 — the cluster exists in state but Terraform cannot reconcile it.
+
+**Files changed:** `modules/aks/main.tf`
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
