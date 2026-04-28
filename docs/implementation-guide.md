@@ -274,20 +274,22 @@ Expected: ~20 lines of `created` output (CRDs, deployments, services, RBAC).
 
 ---
 
-### Step 3 — Patch ArgoCD server to insecure mode
+### Step 3 — Enable insecure mode via ArgoCD ConfigMap
 
-**Why:** By default ArgoCD server handles its own TLS. In this setup TLS is terminated at the Load Balancer / ingress layer. Running ArgoCD in `--insecure` mode prevents a double-TLS situation where the LB strips TLS and then ArgoCD rejects the plain HTTP connection from the LB. Without this patch the ArgoCD UI returns a redirect loop.
+**Why insecure mode:** By default ArgoCD server handles its own TLS. In this setup TLS is terminated at the Load Balancer / ingress layer. Running ArgoCD in insecure mode prevents a double-TLS situation where the LB strips TLS and then ArgoCD rejects the plain HTTP connection. Without this the ArgoCD UI returns a redirect loop.
 
-**Why strategic merge patch, not JSON patch:** ArgoCD v2.11's `argocd-server` container has no `args` field in the install manifest — it runs via `tini` (the Docker ENTRYPOINT) which executes the Docker CMD (`argocd-server`) as the process. A JSON patch `op:add` to `args/-` on a non-existent array creates `args: ["--insecure"]`, replacing the Docker CMD entirely. `tini` then tries to exec `--insecure` as a binary and fails: `[FATAL tini] exec --insecure failed: No such file or directory`. The strategic merge patch sets the full args array including the binary name so `tini` receives `argocd-server --insecure`.
+**Why ConfigMap, not Deployment args patch:** `az aks command invoke --command` passes JSON through multiple shell escaping layers. Long JSON strings get spaces inserted mid-value when the terminal wraps the line (the same corruption as Fix 4). For example, `"argocd-server"` becomes `"argocd-serv  er"` — tini then tries to exec a binary with spaces in the name and crashes. The `argocd-cmd-params-cm` ConfigMap approach uses simple flat JSON (`{"data":{"server.insecure":"true"}}`) with no nested arrays or long string values — nothing to corrupt. It is also the officially recommended ArgoCD way to configure server flags.
 
 ```bash
-az aks command invoke \
-  --resource-group boutique-dev-rg \
-  --name boutique-dev-aks \
-  --command "kubectl patch deployment argocd-server -n argocd --type=strategic -p '{\"spec\":{\"template\":{\"spec\":{\"containers\":[{\"name\":\"argocd-server\",\"args\":[\"argocd-server\",\"--insecure\"]}]}}}}'"
+# Each command is a separate az aks command invoke call — keeps each --command string short
+az aks command invoke --resource-group boutique-dev-rg --name boutique-dev-aks --command "kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{\"data\":{\"server.insecure\":\"true\"}}'"
+
+az aks command invoke --resource-group boutique-dev-rg --name boutique-dev-aks --command "kubectl rollout restart deployment/argocd-server -n argocd"
 ```
 
-Expected: `deployment.apps/argocd-server patched`
+Expected: `configmap/argocd-cmd-params-cm patched` then `deployment.apps/argocd-server restarted`
+
+**Rule for `az aks command invoke`:** Keep each `--command` string short. Every character that goes through `--command` is shell-escaped twice (once by your shell, once by the Azure CLI). Long JSON strings with nested arrays are high-risk for corruption. Split complex operations into multiple separate `az aks command invoke` calls.
 
 ---
 
@@ -1457,6 +1459,49 @@ tini -- argocd-server --insecure     ← tini execs argocd-server with the flag
 **Files changed:**
 - `gitops/argocd/install/kustomization.yaml` — changed from JSON patch to strategic merge patch
 - `docs/implementation-guide.md` — Phase 7 Step 3 updated with correct patch command and explanation
+
+---
+
+### Fix 19 — ArgoCD server crash: `exec argocd-serv  er failed` — shell line-wrap corrupts JSON values in `az aks command invoke`
+
+**Error (in ArgoCD server pod logs):**
+```
+[FATAL tini (7)] exec argocd-serv  er failed: No such file or directory
+```
+
+**Root cause:** Shell line-wrap corruption — the same mechanism as Fix 4 (federated credential subject). When a long `az aks command invoke --command "..."` string wraps in the terminal, the shell inserts spaces at the wrap point. These spaces land inside JSON string values. The previous fix (Fix 18) set `args: ["argocd-server", "--insecure"]` in the Deployment spec, but the command string was long enough to wrap mid-value, producing `args: ["argocd-serv  er", "--insecure"]`. `tini` tried to exec a binary named `argocd-serv  er` (with two spaces) — no such binary exists.
+
+The escaping path for `az aks command invoke`:
+1. Your shell processes the outer `"..."` string and its `\"` escape sequences
+2. Azure CLI receives the processed string and passes it to the invoke container
+3. The container's shell interprets it again
+
+Long strings with nested JSON arrays pass through all three layers and are fragile to any line-wrap at any layer.
+
+**Fix — use the ArgoCD ConfigMap approach with simple JSON:**
+
+`argocd-cmd-params-cm` is ArgoCD's official mechanism for setting server command-line flags via a ConfigMap. ArgoCD reads it on startup and converts keys to flags. The JSON is flat (`{"data":{"server.insecure":"true"}}`) — no nested arrays, no long string values, nothing to corrupt.
+
+Three commands run separately to keep each `--command` string short:
+
+```bash
+# 1. Remove the corrupted args from the Deployment (if a previous patch attempt left bad state)
+az aks command invoke --resource-group boutique-dev-rg --name boutique-dev-aks --command "kubectl patch deployment argocd-server -n argocd --type=json -p '[{\"op\":\"remove\",\"path\":\"/spec/template/spec/containers/0/args\"}]'"
+
+# 2. Set insecure mode via ConfigMap
+az aks command invoke --resource-group boutique-dev-rg --name boutique-dev-aks --command "kubectl patch configmap argocd-cmd-params-cm -n argocd --type merge -p '{\"data\":{\"server.insecure\":\"true\"}}'"
+
+# 3. Restart to pick up the ConfigMap
+az aks command invoke --resource-group boutique-dev-rg --name boutique-dev-aks --command "kubectl rollout restart deployment/argocd-server -n argocd"
+```
+
+**Why this also replaces the Deployment args patch approach going forward:**  
+Patching `argocd-cmd-params-cm` is the documented ArgoCD way to set server flags — it survives ArgoCD upgrades (the ConfigMap is preserved, Deployment spec changes may be overwritten by a future `kubectl apply`). Phase 7 Step 3 has been updated to use this approach.
+
+**General rule for `az aks command invoke`:** Keep each `--command` string under ~150 characters. Split complex operations across multiple invoke calls. Avoid JSON with nested arrays or long string values in the `--command` argument — they are reliably corrupted by line wrapping.
+
+**Files changed:**
+- `docs/implementation-guide.md` — Phase 7 Step 3 updated to ConfigMap approach
 
 ---
 
