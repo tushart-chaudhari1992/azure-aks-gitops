@@ -1145,6 +1145,48 @@ Also added `depends_on = [azurerm_role_assignment.control_plane_kubelet_operator
 
 ---
 
+### Fix 13 — `K8sVersionNotSupported`: Kubernetes 1.29 retired in eastus
+
+**Error (during terraform apply):**
+```
+400 Bad Request — K8sVersionNotSupported
+Managed cluster boutique-dev-aks is on version 1.29.15 which is not supported
+in this region. Please use [az aks get-versions] to get the supported version list.
+```
+
+**Root cause:** Azure retires Kubernetes minor versions roughly 12 months after release. Version 1.29 was the default set in `modules/aks/variables.tf` but has since been removed from the eastus supported list.
+
+Supported versions at time of fix (2026-04-28, eastus):
+```
+1.30, 1.31, 1.32, 1.33, 1.34, 1.35
+```
+
+Command to check current supported versions at any time:
+```bash
+az aks get-versions --location eastus --query "values[].version" -o tsv
+```
+
+**Fix:** Updated the default in `modules/aks/variables.tf`:
+```hcl
+# Before
+default = "1.29"
+
+# After
+default = "1.32"
+```
+
+Version 1.32 was chosen as a stable mid-range option — not the oldest (1.30, close to end of support) nor the newest (1.35, may have rough edges). The `automatic_channel_upgrade = "stable"` setting already in the AKS module will advance the cluster forward automatically as new versions are certified on the stable channel.
+
+**Impact of not fixing:** Cluster creation always fails with 400. This is a hard block — there is no fallback or retry.
+
+**Prevention:** Pin a specific supported version in `terraform.tfvars` per environment rather than relying on the module default, so version upgrades are an explicit, reviewed change per environment:
+```hcl
+# environments/dev/terraform.tfvars
+kubernetes_version = "1.32"
+```
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
