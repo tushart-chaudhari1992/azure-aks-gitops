@@ -8,11 +8,24 @@ resources:
 namespace: argocd
 
 patches:
-  # Run ArgoCD server in insecure mode — TLS is terminated at the load balancer / ingress level
+  # Run ArgoCD server in insecure mode — TLS is terminated at the load balancer / ingress level.
+  # The v2.11 install manifest has no `args` on argocd-server; it uses the Docker image's CMD via tini.
+  # A JSON patch `op:add` to `args/-` on a missing array creates args:["--insecure"], which makes
+  # tini exec "--insecure" as a binary → "No such file or directory".
+  # Strategic merge patch sets the full args array so tini gets the binary name first.
   - patch: |-
-      - op: add
-        path: /spec/template/spec/containers/0/args/-
-        value: --insecure
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: argocd-server
+      spec:
+        template:
+          spec:
+            containers:
+              - name: argocd-server
+                args:
+                  - argocd-server
+                  - --insecure
     target:
       kind: Deployment
       name: argocd-server
