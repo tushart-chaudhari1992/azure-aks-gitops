@@ -26,6 +26,7 @@ resource "azurerm_kubernetes_cluster" "main" {
   # System node pool — runs cluster-critical components only, not application workloads
   default_node_pool {
     name                         = "system"
+    temporary_name_for_rotation  = "tmpsys"
     node_count                   = 1
     vm_size                      = "Standard_D2s_v3"
     vnet_subnet_id               = var.aks_subnet_id

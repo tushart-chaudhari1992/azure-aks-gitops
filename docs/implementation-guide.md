@@ -1289,6 +1289,40 @@ oidc_issuer_enabled = true
 
 ---
 
+### Fix 16 — `temporary_name_for_rotation` required when updating default node pool properties
+
+**Error (during terraform apply — cluster update):**
+```
+Error: `temporary_name_for_rotation` must be specified when updating any of the following
+properties ["default_node_pool.0.max_pods" "default_node_pool.0.vm_size" ...]
+```
+
+**Root cause:** AKS cannot modify system node pool properties (like `max_pods`, `vm_size`, `os_disk_size_gb`) in-place because the system pool runs cluster-critical components. Azure's process is:
+1. Create a new temporary node pool using `temporary_name_for_rotation`
+2. Cordon and drain the existing system pool
+3. Delete the old system pool
+4. Rename the temporary pool back to `system`
+
+The azurerm provider enforces that `temporary_name_for_rotation` must be declared in config before it will plan any of these updates — if it's absent, the provider refuses to proceed rather than risk leaving the cluster without a system pool.
+
+**Fix:** Added `temporary_name_for_rotation = "tmpsys"` to the `default_node_pool` block:
+
+```hcl
+default_node_pool {
+  name                        = "system"
+  temporary_name_for_rotation = "tmpsys"   # ← added
+  ...
+}
+```
+
+`tmpsys` is an arbitrary valid name (1–12 lowercase alphanumeric characters). It only exists during the rotation — once the operation completes the pool is renamed back to `system`.
+
+**Impact of not fixing:** Any change to a gated `default_node_pool` property (the full list is in the error message) fails at plan time before any resources are touched.
+
+**Files changed:** `modules/aks/main.tf`
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
