@@ -31,9 +31,11 @@ resource "azurerm_kubernetes_cluster" "main" {
     max_pods                     = 110
   }
 
-  # Control plane identity — used by AKS to manage Azure resources (load balancers, etc.)
+  # Control plane identity — UserAssigned so kubelet_identity can also be specified.
+  # azurerm requires identity.type = "UserAssigned" whenever kubelet_identity is set.
   identity {
-    type = "SystemAssigned"
+    type         = "UserAssigned"
+    identity_ids = [azurerm_user_assigned_identity.control_plane.id]
   }
 
   # Kubelet identity — used by nodes to pull images from ACR, separate from control plane
@@ -52,7 +54,6 @@ resource "azurerm_kubernetes_cluster" "main" {
 
   # Azure AD RBAC — authenticate to the cluster with Azure identities, not static kubeconfig
   azure_active_directory_role_based_access_control {
-    managed            = true
     azure_rbac_enabled = true
   }
 
@@ -70,6 +71,12 @@ resource "azurerm_kubernetes_cluster" "main" {
   }
 
   tags = var.tags
+}
+
+resource "azurerm_user_assigned_identity" "control_plane" {
+  name                = "${var.prefix}-aks-identity"
+  location            = var.location
+  resource_group_name = var.resource_group_name
 }
 
 resource "azurerm_user_assigned_identity" "kubelet" {

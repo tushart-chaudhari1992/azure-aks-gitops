@@ -32,9 +32,10 @@ resource "azurerm_role_assignment" "aks_acr_pull" {
   skip_service_principal_aad_check = true
 }
 
-# Private endpoint — injects a NIC into the PE subnet with a private IP for ACR
-# Without this, disabling public access would make ACR unreachable entirely
+# Private endpoint — requires Premium SKU. Basic and Standard SKUs must use public access.
+# count=1 when Premium, count=0 otherwise — resources are simply not created for lower SKUs.
 resource "azurerm_private_endpoint" "acr" {
+  count               = var.sku == "Premium" ? 1 : 0
   name                = "${var.prefix}-acr-pe"
   location            = var.location
   resource_group_name = var.resource_group_name
@@ -49,22 +50,22 @@ resource "azurerm_private_endpoint" "acr" {
 
   private_dns_zone_group {
     name                 = "acr-dns-group"
-    private_dns_zone_ids = [azurerm_private_dns_zone.acr.id]
+    private_dns_zone_ids = [azurerm_private_dns_zone.acr[0].id]
   }
 }
 
-# Private DNS zone — resolves *.azurecr.io to the private IP inside the VNet
-# Without this, DNS returns the public IP even though the private endpoint exists
 resource "azurerm_private_dns_zone" "acr" {
+  count               = var.sku == "Premium" ? 1 : 0
   name                = "privatelink.azurecr.io"
   resource_group_name = var.resource_group_name
   tags                = var.tags
 }
 
 resource "azurerm_private_dns_zone_virtual_network_link" "acr" {
+  count                 = var.sku == "Premium" ? 1 : 0
   name                  = "${var.prefix}-acr-dns-link"
   resource_group_name   = var.resource_group_name
-  private_dns_zone_name = azurerm_private_dns_zone.acr.name
+  private_dns_zone_name = azurerm_private_dns_zone.acr[0].name
   virtual_network_id    = var.vnet_id
   registration_enabled  = false
 }

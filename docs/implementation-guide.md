@@ -1004,6 +1004,113 @@ $json | Out-File -FilePath $tmpFile -Encoding utf8
 
 ---
 
+### Fix 11 — Four terraform apply errors: deprecated field, 403 role assignment, ACR SKU, kubelet identity
+
+**Errors (during terraform apply in GitHub Actions):**
+```
+Warning: managed = true is deprecated (azure_active_directory_role_based_access_control)
+Error: 403 AuthorizationFailed — Microsoft.Authorization/roleAssignments/write
+Error: 400 SKUNotSupportPrivateEndpoint — upgrade registry to Premium SKU
+Error: Missing required argument — kubelet_identity requires identity.type = UserAssigned
+```
+
+---
+
+#### Fix 11a — Remove deprecated `managed = true` field
+
+**Root cause:** `managed` inside `azure_active_directory_role_based_access_control` is legacy. In azurerm v4 it is removed; the value is always `true` by default. Keeping it produces a deprecation warning that clutters apply output.
+
+**Fix:** Removed the `managed = true` line from the block in `modules/aks/main.tf`. The block now only contains `azure_rbac_enabled = true`.
+
+**Impact of not fixing:** Warning only — apply succeeds but the warning grows louder with every azurerm minor version until it becomes a hard error in v4.
+
+---
+
+#### Fix 11b — 403 on role assignment creation (User Access Administrator missing)
+
+**Root cause:** Terraform's `azurerm_role_assignment` resource calls `Microsoft.Authorization/roleAssignments/write`. The `Contributor` role does not include this permission. Creating role assignments requires `Owner` or `User Access Administrator`.
+
+**Fix:** Granted `User Access Administrator` to the CI service principal at subscription scope:
+```powershell
+$az = "C:\Program Files\Microsoft SDKs\Azure\CLI2\wbin\az.cmd"
+& $az role assignment create `
+  --assignee "5ccb4527-302c-4944-8bdb-f96b16f2cb6d" `
+  --role "User Access Administrator" `
+  --scope "/subscriptions/3a2f7662-4ee2-4762-ab05-988439cdb9c4"
+```
+
+Role assignment ID created: `889ea22a-05b1-40e4-9455-5f9519ae164f`
+
+**Why subscription scope and not RG scope:** The resource group `boutique-dev-rg` is itself created by Terraform. Granting at RG scope would be a chicken-and-egg problem — the RG must exist before you can grant a role on it. Subscription scope covers all current and future RGs.
+
+**Security note:** `User Access Administrator` is a privileged role. In a stricter environment, use a custom role scoped to only `Microsoft.Authorization/roleAssignments/write` on specific resource types. For this playbook the built-in role is acceptable.
+
+**Impact of not fixing:** Every `azurerm_role_assignment` resource in the Terraform config fails to create. The AKS kubelet identity cannot pull from ACR, the Key Vault access policy cannot be set — the cluster would start but fail to pull images.
+
+---
+
+#### Fix 11c — ACR private endpoint fails on Basic/Standard SKU
+
+**Root cause:** Azure ACR private endpoints require **Premium** SKU. Basic and Standard SKUs do not support private endpoint connections. Dev uses Basic, prod uses Standard — both would fail trying to create the private endpoint.
+
+**Fix:** Added `count = var.sku == "Premium" ? 1 : 0` to all three private-endpoint-related resources in `modules/acr/main.tf`:
+- `azurerm_private_endpoint.acr`
+- `azurerm_private_dns_zone.acr`
+- `azurerm_private_dns_zone_virtual_network_link.acr`
+
+References inside those resources updated to use `[0]` index (required when using `count`).
+
+**Behaviour by environment:**
+
+| Environment | SKU | Private endpoint created? | Access path |
+|---|---|---|---|
+| dev | Basic | No | Public internet (authenticated) |
+| prod | Standard | No | Public internet (authenticated) |
+| future prod | Premium | Yes | VNet private endpoint only |
+
+**To enable private endpoints in prod:** Change `sku = "Standard"` to `sku = "Premium"` in `environments/prod/main.tf`. Terraform will upgrade the registry and create the endpoint, DNS zone, and VNet link automatically.
+
+**Impact of not fixing:** `terraform apply` fails with 400 Bad Request before any ACR resources are fully created.
+
+---
+
+#### Fix 11d — `kubelet_identity` incompatible with `SystemAssigned` control plane identity
+
+**Root cause:** The azurerm provider enforces a constraint: when `kubelet_identity` is specified, the `identity` block must have `type = "UserAssigned"` with at least one entry in `identity_ids`. `SystemAssigned` is not permitted alongside a custom kubelet identity because Azure needs an explicit user-assigned identity to delegate kubelet permissions to.
+
+**Fix:** Added a second `azurerm_user_assigned_identity` resource for the AKS control plane, and changed the `identity` block:
+
+```hcl
+# Before (breaks when kubelet_identity is also set)
+identity {
+  type = "SystemAssigned"
+}
+
+# After — separate identity for control plane vs kubelet
+resource "azurerm_user_assigned_identity" "control_plane" {
+  name                = "${var.prefix}-aks-identity"
+  ...
+}
+
+identity {
+  type         = "UserAssigned"
+  identity_ids = [azurerm_user_assigned_identity.control_plane.id]
+}
+```
+
+**Two identities now in use:**
+
+| Identity | Name | Purpose |
+|---|---|---|
+| `control_plane` | `boutique-dev-aks-identity` | AKS manages load balancers, routes, node NICs |
+| `kubelet` | `boutique-dev-kubelet-identity` | Nodes pull images from ACR, mount Key Vault secrets |
+
+Keeping them separate follows least-privilege — a compromised node cannot use the control plane identity to modify cluster infrastructure, and the control plane identity cannot access ACR or Key Vault.
+
+**Impact of not fixing:** `terraform apply` fails immediately with "Missing required argument" before AKS is created.
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
