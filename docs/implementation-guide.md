@@ -240,23 +240,26 @@ Run all `kubectl` commands via `az aks command invoke` (see Phase 6).
 
 ### Install ArgoCD
 
+> **Note — `az aks command invoke` has no git binary.** `kubectl apply -k` with a remote URL fails because kustomize needs git to clone the reference. Apply the upstream manifest directly via HTTPS instead (kubectl fetches HTTP URLs natively), then patch the deployment separately.
+
 ```bash
-# Create namespace and install (uses the kustomization in gitops/argocd/install/)
+# Step 1 — create namespace and install official ArgoCD manifest
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
-  --command "kubectl create namespace argocd" 
+  --command "kubectl create namespace argocd && kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/v2.11.0/manifests/install.yaml"
 
+# Step 2 — patch argocd-server to run in insecure mode (TLS terminated at LB/ingress)
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
-  --command "kubectl apply -k https://github.com/tushart-chaudhari1992/azure-aks-gitops/gitops/argocd/install"
+  --command "kubectl patch deployment argocd-server -n argocd --type=json -p='[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args\",\"value\":[\"--insecure\"]}]'"
 
-# Wait for all pods to be Running
+# Step 3 — wait for server to be ready
 az aks command invoke \
   --resource-group boutique-dev-rg \
   --name boutique-dev-aks \
-  --command "kubectl rollout status deployment/argocd-server -n argocd"
+  --command "kubectl rollout status deployment/argocd-server -n argocd --timeout=3m"
 ```
 
 ### Get ArgoCD admin password
