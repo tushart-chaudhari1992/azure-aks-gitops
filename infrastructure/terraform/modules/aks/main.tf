@@ -81,9 +81,10 @@ resource "azurerm_kubernetes_cluster" "main" {
 
   tags = var.tags
 
-  # Role assignment propagation in Azure AD takes up to 2 minutes. Without this
-  # dependency the cluster API call races the propagation and fails with 400.
-  depends_on = [azurerm_role_assignment.control_plane_kubelet_operator]
+  # Wait for both AAD role propagation AND MSI data plane certificate issuance.
+  # time_sleep.wait_for_msi already depends on the role assignment — this single
+  # depends_on covers both waits.
+  depends_on = [time_sleep.wait_for_msi]
 }
 
 resource "azurerm_user_assigned_identity" "control_plane" {
@@ -106,6 +107,14 @@ resource "azurerm_role_assignment" "control_plane_kubelet_operator" {
   role_definition_name             = "Managed Identity Operator"
   scope                            = azurerm_user_assigned_identity.kubelet.id
   skip_service_principal_aad_check = true
+}
+
+# Azure MSI data plane takes 60-120s to issue certificates for newly created identities.
+# Without this wait, AKS cluster creation races the MSI endpoint and fails with:
+# "Reconcile managed identity credential failed — length of returned certificate: 0"
+resource "time_sleep" "wait_for_msi" {
+  depends_on      = [azurerm_role_assignment.control_plane_kubelet_operator]
+  create_duration = "90s"
 }
 
 # User node pool — runs application workloads, separate from system pool
