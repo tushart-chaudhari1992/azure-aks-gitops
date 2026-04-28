@@ -49,6 +49,7 @@ module "aks" {
   aks_subnet_id                   = module.networking.aks_subnet_id
   user_node_vm_size               = "Standard_D2s_v3"
   user_node_count                 = 1
+  private_cluster_enabled         = false # dev: direct kubectl access from allowlisted IP
   api_server_authorized_ip_ranges = var.api_server_authorized_ip_ranges
   tags                            = local.tags
 }

@@ -9,8 +9,8 @@ resource "azurerm_kubernetes_cluster" "main" {
   # kubectl works directly from any machine whose IP is in api_server_authorized_ip_ranges.
   # Trade-off: slightly larger attack surface than a fully private cluster, but the allowlist
   # keeps it locked to known IPs — acceptable for dev, not recommended for prod.
-  private_cluster_enabled         = false
-  api_server_authorized_ip_ranges = var.api_server_authorized_ip_ranges
+  private_cluster_enabled         = var.private_cluster_enabled
+  api_server_authorized_ip_ranges = var.private_cluster_enabled ? null : var.api_server_authorized_ip_ranges
 
   # Disables the local admin kubeconfig entirely — forces all access through Azure AD RBAC.
   # Without this, anyone with the kubeconfig file has cluster-admin regardless of AAD policies.

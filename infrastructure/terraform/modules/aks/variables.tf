@@ -3,9 +3,16 @@ variable "location" { type = string }
 variable "resource_group_name" { type = string }
 variable "aks_subnet_id" { type = string }
 
+variable "private_cluster_enabled" {
+  type        = bool
+  default     = true
+  description = "Disable for dev to allow direct kubectl access. Keep true for prod."
+}
+
 variable "api_server_authorized_ip_ranges" {
   type        = list(string)
-  description = "CIDR ranges allowed to reach the AKS API server. Add your machine IP as x.x.x.x/32."
+  default     = []
+  description = "CIDR ranges allowed to reach the AKS API server. Only used when private_cluster_enabled = false."
 }
 
 variable "kubernetes_version" {
