@@ -1022,7 +1022,9 @@ Error: Missing required argument — kubelet_identity requires identity.type = U
 
 **Fix:** Removed the `managed = true` line from the block in `modules/aks/main.tf`. The block now only contains `azure_rbac_enabled = true`.
 
-**Impact of not fixing:** Warning only — apply succeeds but the warning grows louder with every azurerm minor version until it becomes a hard error in v4.
+**Correction — `managed = true` must stay in azurerm ~3.x:** Removing it causes `terraform validate` to fail with "one of admin_group_object_ids, client_app_id, managed, server_app_id … must be specified." In v3, `managed = true` is the flag that switches the block from legacy AAD app registration mode to AKS-managed Entra integration. Without it, the provider expects legacy fields. The field was restored with a comment explaining it will be auto-defaulted (and removable) in azurerm v4.0.
+
+**Impact of removing it prematurely:** `terraform validate` exits with 6 errors — the pipeline fails at the validate stage before any plan is produced.
 
 ---
 
