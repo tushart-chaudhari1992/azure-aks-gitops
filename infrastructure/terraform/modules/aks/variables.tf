@@ -10,12 +10,12 @@ variable "kubernetes_version" {
 
 variable "user_node_vm_size" {
   type    = string
-  default = "Standard_D4s_v3"
+  default = "Standard_D2s_v3"
 }
 
 variable "user_node_count" {
   type    = number
-  default = 2
+  default = 1
 }
 
 variable "tags" {

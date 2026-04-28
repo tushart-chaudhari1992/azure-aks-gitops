@@ -47,8 +47,8 @@ module "aks" {
   location            = var.location
   resource_group_name = azurerm_resource_group.main.name
   aks_subnet_id       = module.networking.aks_subnet_id
-  user_node_vm_size   = "Standard_D4s_v3"
-  user_node_count     = 2
+  user_node_vm_size   = "Standard_D2s_v3"
+  user_node_count     = 1
   tags                = local.tags
 }
 

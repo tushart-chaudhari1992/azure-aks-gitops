@@ -28,7 +28,7 @@ resource "azurerm_kubernetes_cluster" "main" {
     os_disk_size_gb              = 50
     type                         = "VirtualMachineScaleSets"
     only_critical_addons_enabled = true
-    max_pods                     = 110
+    max_pods                     = 50
   }
 
   # Control plane identity — UserAssigned so kubelet_identity can also be specified.
@@ -111,7 +111,7 @@ resource "azurerm_kubernetes_cluster_node_pool" "user" {
   node_count            = var.user_node_count
   vnet_subnet_id        = var.aks_subnet_id
   os_disk_size_gb       = 100
-  max_pods              = 110
+  max_pods              = 50
   tags                  = var.tags
 }
 

@@ -1198,6 +1198,69 @@ kubernetes_version = "1.32"
 
 ---
 
+### Fix 14 — Insufficient vCPU quota and subnet IP exhaustion on user node pool
+
+**Error (during terraform apply — user node pool creation):**
+```
+400 ErrCode_InsufficientVCPUQuota
+  left regional vcpu quota 6, requested quota 8
+
+400 InsufficientSubnetSize
+  Pre-allocated IPs 327 exceeds IPs available 250 in Subnet Cidr 10.10.1.0/24
+```
+
+Two constraints were violated simultaneously:
+
+---
+
+#### vCPU quota
+
+Free/trial Azure subscriptions have a default regional vCPU limit of 10 in eastus. After the system node pool (1 × `Standard_D2s_v3` = 2 vCPUs) was created, only 6 vCPUs remained. The user pool was configured as 2 × `Standard_D4s_v3` = 8 vCPUs — 2 over the remaining quota.
+
+**Fix:** Reduced the user pool in `environments/dev/main.tf` and module defaults:
+
+| Setting | Before | After | Reason |
+|---|---|---|---|
+| `user_node_vm_size` | `Standard_D4s_v3` (4 vCPU) | `Standard_D2s_v3` (2 vCPU) | Halves vCPU consumption per node |
+| `user_node_count` | `2` | `1` | One node fits within remaining quota |
+
+**vCPU budget after fix:**
+
+| Component | vCPUs |
+|---|---|
+| System pool (1 × D2s_v3) | 2 |
+| User pool (1 × D2s_v3) | 2 |
+| Upgrade surge node (1 × D2s_v3) | 2 |
+| **Total** | **6 — exactly at quota** |
+
+To scale up later: request a quota increase at `https://portal.azure.com/#view/Microsoft_Azure_Capacity/QuotaMenuBlade` or reduce the number of surge nodes.
+
+---
+
+#### Subnet IP exhaustion (Azure CNI)
+
+Azure CNI pre-allocates `max_pods` IP addresses per node from the subnet at node creation time — not when pods actually run. With `max_pods = 110`:
+
+```
+(1 system node + 2 user nodes + 1 surge) × (110 max_pods + 1 node IP) = 444 IPs
+Subnet /24 provides 250 usable IPs → exhausted
+```
+
+**Fix:** Reduced `max_pods` from `110` to `50` on both node pools in `modules/aks/main.tf`.
+
+```
+(1 system + 1 user + 1 surge) × (50 + 1) = 153 IPs → fits within 250
+```
+
+`50` satisfies the Checkov `CKV_AZURE_168` check (minimum 50 pods per node) and leaves headroom for surge nodes during upgrades.
+
+**Files changed:**
+- `environments/dev/main.tf` — `user_node_vm_size`, `user_node_count`
+- `modules/aks/variables.tf` — updated defaults to match
+- `modules/aks/main.tf` — `max_pods = 50` on system and user node pools
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
