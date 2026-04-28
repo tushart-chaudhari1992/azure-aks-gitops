@@ -1,17 +1,16 @@
 name: Terraform — Dev Infrastructure
 
 on:
-   workflow_dispatch: 
-  #push:
-   # branches: [main]
-    #paths:
-     # - 'infrastructure/terraform/**'
-      #- '.github/workflows/terraform-dev.yml'
-  #pull_request:
-   # branches: [main]
-   # paths:
-   #   - 'infrastructure/terraform/**'
-   #   - '.github/workflows/terraform-dev.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Terraform action to run'
+        required: true
+        default: 'apply'
+        type: choice
+        options:
+          - apply
+          - destroy
 
 env:
   TF_VERSION: "1.7.5"
@@ -26,7 +25,7 @@ permissions:
 jobs:
 
   # ── 1. SECURITY SCAN ─────────────────────────────────────────────────────────
-  # Runs in parallel with validate. Both must pass before plan is allowed.
+  # Runs in parallel with validate. Both must pass before plan/destroy is allowed.
   security:
     name: Security scan
     runs-on: ubuntu-latest
@@ -147,11 +146,12 @@ jobs:
         run: tflint --format compact
 
   # ── 3. PLAN ──────────────────────────────────────────────────────────────────
-  # Runs only after security AND validate both pass.
+  # Only runs when action=apply. Destroy has its own plan preview inside the destroy job.
   plan:
     name: Plan
     runs-on: ubuntu-latest
     needs: [security, validate]
+    if: inputs.action == 'apply'
     outputs:
       exitcode: ${{ steps.plan.outputs.exitcode }}
     steps:
@@ -259,15 +259,15 @@ jobs:
           exit 1
 
   # ── 4. APPLY ─────────────────────────────────────────────────────────────────
-  # Only runs on push to main (not PRs), only when the plan detected changes,
-  # and only after a human approves in GitHub → Settings → Environments → dev.
+  # Runs only when action=apply and plan detected changes.
+  # Requires human approval in GitHub → Settings → Environments → dev.
   apply:
     name: Apply
     runs-on: ubuntu-latest
     needs: plan
-    ##github.event_name == 'push' && add this part once trigger issue resolved
     if: |
       github.ref == 'refs/heads/main' &&
+      inputs.action == 'apply' &&
       needs.plan.outputs.exitcode == '2'
     environment: dev
     steps:
@@ -306,3 +306,51 @@ jobs:
       - name: terraform apply
         working-directory: ${{ env.WORKING_DIR }}
         run: terraform apply -auto-approve tfplan.dev
+
+  # ── 5. DESTROY ───────────────────────────────────────────────────────────────
+  # Runs only when action=destroy. Skips the plan job entirely.
+  # Shows a destroy preview first, then requires human approval before deleting.
+  destroy:
+    name: Destroy
+    runs-on: ubuntu-latest
+    needs: [security, validate]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      inputs.action == 'destroy'
+    environment: dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform ${{ env.TF_VERSION }}
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure login via OIDC
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set ARM credentials for Terraform OIDC
+        run: |
+          echo "ARM_USE_OIDC=true" >> $GITHUB_ENV
+          echo "ARM_CLIENT_ID=${{ secrets.AZURE_CLIENT_ID }}" >> $GITHUB_ENV
+          echo "ARM_TENANT_ID=${{ secrets.AZURE_TENANT_ID }}" >> $GITHUB_ENV
+          echo "ARM_SUBSCRIPTION_ID=${{ secrets.AZURE_SUBSCRIPTION_ID }}" >> $GITHUB_ENV
+
+      - name: terraform init
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform init
+
+      - name: terraform plan -destroy (preview)
+        # Shows exactly which resources will be deleted before the environment
+        # approval gate. Review this output in the Actions log before approving.
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform plan -destroy 2>&1 | tee destroy-plan.txt
+
+      - name: terraform destroy
+        working-directory: ${{ env.WORKING_DIR }}
+        run: terraform destroy -auto-approve
