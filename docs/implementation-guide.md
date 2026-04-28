@@ -1591,6 +1591,59 @@ az aks command invoke \
 
 ---
 
+### Fix 21 — Switch dev cluster to public endpoint with IP allowlist
+
+**Problem:** `az aks command invoke` had persistent issues — shell double-escaping corrupting JSON values, and "Operation returned an invalid status 'OK'" errors from the Azure CLI response parser. Every kubectl operation required a workaround.
+
+**Root cause of `az aks command invoke` limitations:** The command tunnels through the Azure control plane into a minimal container inside the cluster. Every character in `--command` is escaped twice (local shell + Azure CLI serialisation). Complex JSON, long strings, and multi-pipe commands are all fragile. It is designed for emergency break-glass access, not routine development use.
+
+**Fix — make the API server public, restricted to developer IP only:**
+
+| Setting | Before | After |
+|---|---|---|
+| `private_cluster_enabled` | `true` | `false` |
+| `private_dns_zone_id` | `"System"` | removed |
+| `api_server_authorized_ip_ranges` | not set | `["223.233.84.73/32"]` |
+
+**Security trade-off:**
+- **Before:** API server had no public endpoint — unreachable from internet, but `az aks command invoke` required for all kubectl access
+- **After:** API server is public but locked to a single /32 CIDR — only one machine on the internet can reach it. All other IPs get a TCP RST. The attack surface is slightly larger than a fully private cluster, but the allowlist is as restrictive as a firewall rule can be.
+
+**Prod should stay private** — prod clusters should use a jump box, VPN, or self-hosted CI runner in the VNet. The IP allowlist approach is acceptable for a personal dev cluster where there is one known developer IP.
+
+**Important — `private_cluster_enabled` is immutable:** Azure does not allow switching an existing cluster between private and public. Terraform detects this as a ForceNew change and will **destroy and recreate the AKS cluster** on the next apply. ACR, Key Vault, networking, and all other resources are unaffected.
+
+**After `terraform apply` completes — get credentials and kubectl works directly:**
+```bash
+az aks get-credentials \
+  --resource-group boutique-dev-rg \
+  --name boutique-dev-aks \
+  --overwrite-existing
+
+kubectl get nodes   # works directly, no az aks command invoke needed
+```
+
+**If your IP changes** (dynamic home IP, VPN, different location):
+```powershell
+# Get new IP
+(Invoke-WebRequest -Uri "https://api.ipify.org").Content
+
+# Update terraform.tfvars
+api_server_authorized_ip_ranges = ["<new-ip>/32"]
+
+# Apply — this is a non-destructive in-place update, no cluster recreate needed
+terraform apply
+```
+
+**Files changed:**
+- `modules/aks/main.tf` — `private_cluster_enabled = false`, added `api_server_authorized_ip_ranges`
+- `modules/aks/variables.tf` — added `api_server_authorized_ip_ranges` variable
+- `environments/dev/main.tf` — passes variable to module
+- `environments/dev/variables.tf` — declares variable
+- `environments/dev/terraform.tfvars` — set to `["223.233.84.73/32"]`
+
+---
+
 ## Where to Check Pipeline Status
 
 ### GitHub Actions runs
