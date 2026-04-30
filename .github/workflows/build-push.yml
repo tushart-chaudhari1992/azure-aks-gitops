@@ -138,44 +138,41 @@ jobs:
   # ── 4. SCA ───────────────────────────────────────────────────────────────────
   # Software Composition Analysis — scans third-party dependencies for known
   # CVEs (go.sum, requirements.txt, package-lock.json, pom.xml, etc.).
+  #
+  # trivy-action is NOT used here. Its SARIF code path reconstructs the Trivy
+  # CLI command internally and drops --ignorefile regardless of the trivyignores
+  # parameter, TRIVY_IGNOREFILE env var, or .trivyignore placement — all three
+  # were attempted and failed. Running Trivy directly via setup-trivy gives full
+  # CLI control and guarantees --ignorefile is passed on every invocation.
   sca:
     name: SCA — dependency vulnerabilities
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Stage trivyignore in scan root
-        # trivy-action's SARIF code path reconstructs the Trivy CLI command
-        # internally and does not pass --ignorefile regardless of the trivyignores
-        # parameter or TRIVY_IGNOREFILE env var. Trivy's default behaviour is to
-        # look for .trivyignore in the directory being scanned, so copying the
-        # file into src/ is the only reliable way to apply suppressions.
-        run: cp .trivyignore src/.trivyignore
+      - name: Install Trivy
+        uses: aquasecurity/setup-trivy@v0.2.6
+        with:
+          version: v0.69.3
 
       - name: Trivy — SCA findings table (log output)
-        # Prints a human-readable table to the job log so you can see package names,
-        # CVE IDs, severity, installed version, and fixed version without opening
-        # the GitHub Security tab. exit-code 0 means this step never blocks —
-        # the SARIF step below is the actual gate.
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          scan-type: fs
-          scan-ref: src/
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          format: table
-          exit-code: '0'
+        run: |
+          trivy fs src/ \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --ignorefile .trivyignore \
+            --format table \
+            --exit-code 0
 
-      - name: Trivy — scan dependency manifests in src/ (SARIF gate)
-        uses: aquasecurity/trivy-action@0.35.0
-        with:
-          scan-type: fs
-          scan-ref: src/
-          scanners: vuln
-          severity: HIGH,CRITICAL
-          format: sarif
-          output: trivy-sca.sarif
-          exit-code: '1'
+      - name: Trivy — SCA SARIF gate
+        run: |
+          trivy fs src/ \
+            --scanners vuln \
+            --severity HIGH,CRITICAL \
+            --ignorefile .trivyignore \
+            --format sarif \
+            --output trivy-sca.sarif \
+            --exit-code 1
 
       - name: Upload SCA results to GitHub Security tab
         if: always()

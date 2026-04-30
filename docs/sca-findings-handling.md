@@ -181,16 +181,47 @@ CVE-2026-40192   # pillow — DoS
   run: cp .trivyignore src/.trivyignore
 ```
 
-**Why the file must be copied and not referenced directly:**
-`trivy-action`'s SARIF code path reconstructs the Trivy CLI command internally and
-does not pass `--ignorefile` to it — even when the `trivyignores` parameter is set or
-when `TRIVY_IGNOREFILE` is set as an environment variable on the step. Both approaches
-were attempted and failed. Trivy's own default behaviour is to look for `.trivyignore`
-in the directory it is scanning, so placing the file there is the only approach that
-works regardless of how the action invokes the binary.
+**Why `trivy-action` is not used for this job:**
+Three approaches using `aquasecurity/trivy-action` were attempted and all failed:
 
-The source of truth remains `.trivyignore` at the repo root. The copy in `src/` is
-ephemeral — it exists only on the runner during the job and is never committed.
+| Attempt | Approach | Why it failed |
+|---------|----------|---------------|
+| 1 | `trivyignores: .trivyignore` parameter | Action reads the param and prints file contents to log, but drops `--ignorefile` from the Trivy CLI it builds for SARIF mode |
+| 2 | `TRIVY_IGNOREFILE` env var on the step | Action spawns Trivy as a subprocess with a reconstructed environment — the step env var is not inherited by the subprocess |
+| 3 | Copy `.trivyignore` into `src/` before scan | Trivy looks for `.trivyignore` in the CWD (workspace root), not the scan path — copy into `src/` has no effect |
+
+The root cause is that `trivy-action`'s SARIF code path hard-codes the Trivy command
+as `trivy fs <scan-ref>` with no additional flags, bypassing all configuration this
+team can set externally.
+
+**Fix applied:** Replace `trivy-action` with `aquasecurity/setup-trivy` + Trivy CLI
+run steps. This gives direct control of every CLI argument:
+
+```yaml
+- name: Install Trivy
+  uses: aquasecurity/setup-trivy@v0.2.6
+  with:
+    version: v0.69.3
+
+- name: Trivy — SCA findings table (log output)
+  run: |
+    trivy fs src/ \
+      --scanners vuln \
+      --severity HIGH,CRITICAL \
+      --ignorefile .trivyignore \
+      --format table \
+      --exit-code 0
+
+- name: Trivy — SCA SARIF gate
+  run: |
+    trivy fs src/ \
+      --scanners vuln \
+      --severity HIGH,CRITICAL \
+      --ignorefile .trivyignore \
+      --format sarif \
+      --output trivy-sca.sarif \
+      --exit-code 1
+```
 
 **Effect:**
 - Trivy skips exactly these 14 CVE IDs — any new CVE not on this list still fails
