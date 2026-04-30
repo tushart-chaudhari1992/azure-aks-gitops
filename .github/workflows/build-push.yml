@@ -149,6 +149,8 @@ jobs:
         # CVE IDs, severity, installed version, and fixed version without opening
         # the GitHub Security tab. exit-code 0 means this step never blocks —
         # the SARIF step below is the actual gate.
+        # trivyignores must be set explicitly — when scan-ref is src/, Trivy
+        # resolves the ignore file relative to that directory, not the workspace root.
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
@@ -157,6 +159,7 @@ jobs:
           severity: HIGH,CRITICAL
           format: table
           exit-code: '0'
+          trivyignores: .trivyignore
 
       - name: Trivy — scan dependency manifests in src/ (SARIF gate)
         uses: aquasecurity/trivy-action@0.35.0
@@ -168,6 +171,7 @@ jobs:
           format: sarif
           output: trivy-sca.sarif
           exit-code: '1'
+          trivyignores: .trivyignore
 
       - name: Upload SCA results to GitHub Security tab
         if: always()
