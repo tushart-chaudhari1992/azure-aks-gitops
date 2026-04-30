@@ -144,15 +144,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Stage trivyignore in scan root
+        # trivy-action's SARIF code path reconstructs the Trivy CLI command
+        # internally and does not pass --ignorefile regardless of the trivyignores
+        # parameter or TRIVY_IGNOREFILE env var. Trivy's default behaviour is to
+        # look for .trivyignore in the directory being scanned, so copying the
+        # file into src/ is the only reliable way to apply suppressions.
+        run: cp .trivyignore src/.trivyignore
+
       - name: Trivy — SCA findings table (log output)
         # Prints a human-readable table to the job log so you can see package names,
         # CVE IDs, severity, installed version, and fixed version without opening
         # the GitHub Security tab. exit-code 0 means this step never blocks —
         # the SARIF step below is the actual gate.
-        # TRIVY_IGNOREFILE env var is used instead of the trivyignores parameter —
-        # when format: sarif, trivy-action strips --ignorefile from the Trivy CLI
-        # call it builds internally, so the parameter has no effect. The env var
-        # is read by Trivy directly on every invocation regardless of the action.
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
@@ -161,8 +165,6 @@ jobs:
           severity: HIGH,CRITICAL
           format: table
           exit-code: '0'
-        env:
-          TRIVY_IGNOREFILE: .trivyignore
 
       - name: Trivy — scan dependency manifests in src/ (SARIF gate)
         uses: aquasecurity/trivy-action@0.35.0
@@ -174,8 +176,6 @@ jobs:
           format: sarif
           output: trivy-sca.sarif
           exit-code: '1'
-        env:
-          TRIVY_IGNOREFILE: .trivyignore
 
       - name: Upload SCA results to GitHub Security tab
         if: always()

@@ -151,9 +151,11 @@ to the AI backend. The vulnerable code path is unreachable in normal operation.
 
 ## Decision — Option A: `.trivyignore` (Applied)
 
-Create a `.trivyignore` file at the repo root listing each CVE explicitly.
+Create a `.trivyignore` file listing each CVE explicitly. Trivy checks for this file
+in the directory being scanned by default — so the file must live in the scan root
+(`src/`), not the repo root. A workflow step copies it there before any Trivy step runs.
 
-**File created: `.trivyignore`**
+**File: `.trivyignore` (repo root, copied to `src/` at scan time)**
 
 ```
 CVE-2026-41242   # protobufjs — arbitrary code execution
@@ -172,10 +174,28 @@ CVE-2026-34070   # langchain-core — path traversal
 CVE-2026-40192   # pillow — DoS
 ```
 
+**Workflow step added before Trivy steps:**
+
+```yaml
+- name: Stage trivyignore in scan root
+  run: cp .trivyignore src/.trivyignore
+```
+
+**Why the file must be copied and not referenced directly:**
+`trivy-action`'s SARIF code path reconstructs the Trivy CLI command internally and
+does not pass `--ignorefile` to it — even when the `trivyignores` parameter is set or
+when `TRIVY_IGNOREFILE` is set as an environment variable on the step. Both approaches
+were attempted and failed. Trivy's own default behaviour is to look for `.trivyignore`
+in the directory it is scanning, so placing the file there is the only approach that
+works regardless of how the action invokes the binary.
+
+The source of truth remains `.trivyignore` at the repo root. The copy in `src/` is
+ephemeral — it exists only on the runner during the job and is never committed.
+
 **Effect:**
 - Trivy skips exactly these 14 CVE IDs — any new CVE not on this list still fails
   the pipeline
-- The `.trivyignore` file is committed to the repo — suppressions are visible,
+- The `.trivyignore` file is committed to the repo root — suppressions are visible,
   reviewable, and auditable in git history
 - The SARIF upload to the GitHub Security tab still runs — findings are recorded
   even if they do not block
