@@ -144,7 +144,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Trivy — scan dependency manifests in src/
+      - name: Trivy — SCA findings table (log output)
+        # Prints a human-readable table to the job log so you can see package names,
+        # CVE IDs, severity, installed version, and fixed version without opening
+        # the GitHub Security tab. exit-code 0 means this step never blocks —
+        # the SARIF step below is the actual gate.
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          scan-type: fs
+          scan-ref: src/
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          format: table
+          exit-code: '0'
+
+      - name: Trivy — scan dependency manifests in src/ (SARIF gate)
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
@@ -252,7 +266,16 @@ jobs:
         id: tag
         run: echo "IMAGE_TAG=sha-$(echo '${{ github.sha }}' | cut -c1-7)" >> $GITHUB_OUTPUT
 
-      - name: Trivy — scan ${{ matrix.service }} image
+      - name: Trivy — image findings table (log output)
+        uses: aquasecurity/trivy-action@0.35.0
+        with:
+          image-ref: ${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.service }}:${{ steps.tag.outputs.IMAGE_TAG }}
+          scanners: vuln
+          severity: CRITICAL
+          format: table
+          exit-code: '0'
+
+      - name: Trivy — scan ${{ matrix.service }} image (SARIF gate)
         uses: aquasecurity/trivy-action@0.35.0
         with:
           image-ref: ${{ vars.ACR_LOGIN_SERVER }}/${{ matrix.service }}:${{ steps.tag.outputs.IMAGE_TAG }}
