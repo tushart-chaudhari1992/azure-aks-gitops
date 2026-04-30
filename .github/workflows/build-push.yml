@@ -76,10 +76,16 @@ jobs:
 
       - name: Resolve service list
         id: resolve
+        env:
+          # Passed via env to prevent shell injection — ${{ github }} context values
+          # are user-controlled (branch names, PR titles, input fields) and must never
+          # be interpolated directly into a run: block.
+          EVENT_NAME: ${{ github.event_name }}
+          SERVICES_INPUT: ${{ github.event.inputs.services }}
         run: |
           ALL='["adservice","cartservice","checkoutservice","currencyservice","emailservice","frontend","loadgenerator","paymentservice","productcatalogservice","recommendationservice","shippingservice","shoppingassistantservice"]'
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            INPUT="${{ github.event.inputs.services }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            INPUT="$SERVICES_INPUT"
             if [ "$INPUT" = "all" ] || [ -z "$INPUT" ]; then
               echo "services=${ALL}" >> $GITHUB_OUTPUT
             else

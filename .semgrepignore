@@ -1,0 +1,16 @@
+# Semgrep ignore — upstream Google Online Boutique demo source
+#
+# All code under src/ is the unmodified Google microservices-demo application
+# (https://github.com/GoogleCloudPlatform/microservices-demo). Semgrep correctly
+# identifies real security issues in that code (insecure gRPC, missing cookie
+# flags, math/rand, HTTP without TLS, etc.) — these are intentional simplifications
+# in the demo and are not production code written by this team.
+#
+# Excluding src/ keeps the SAST gate meaningful: it will still block on any
+# security issues introduced in infrastructure code, workflow files, or scripts
+# that this team owns. Trivy SCA continues to scan src/ for dependency CVEs
+# independently of this file.
+#
+# If custom services are added to src/ by this team, remove the relevant
+# directory from this ignore list so those files are scanned.
+src/
