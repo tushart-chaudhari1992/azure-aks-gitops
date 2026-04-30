@@ -149,8 +149,10 @@ jobs:
         # CVE IDs, severity, installed version, and fixed version without opening
         # the GitHub Security tab. exit-code 0 means this step never blocks —
         # the SARIF step below is the actual gate.
-        # trivyignores must be set explicitly — when scan-ref is src/, Trivy
-        # resolves the ignore file relative to that directory, not the workspace root.
+        # TRIVY_IGNOREFILE env var is used instead of the trivyignores parameter —
+        # when format: sarif, trivy-action strips --ignorefile from the Trivy CLI
+        # call it builds internally, so the parameter has no effect. The env var
+        # is read by Trivy directly on every invocation regardless of the action.
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
@@ -159,7 +161,8 @@ jobs:
           severity: HIGH,CRITICAL
           format: table
           exit-code: '0'
-          trivyignores: .trivyignore
+        env:
+          TRIVY_IGNOREFILE: .trivyignore
 
       - name: Trivy — scan dependency manifests in src/ (SARIF gate)
         uses: aquasecurity/trivy-action@0.35.0
@@ -171,7 +174,8 @@ jobs:
           format: sarif
           output: trivy-sca.sarif
           exit-code: '1'
-          trivyignores: .trivyignore
+        env:
+          TRIVY_IGNOREFILE: .trivyignore
 
       - name: Upload SCA results to GitHub Security tab
         if: always()
